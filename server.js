@@ -117,14 +117,27 @@ let redisInitialized = false;
 async function initializeRedis() {
   try {
     await redisService.init();
-    console.log('Redis service initialized successfully');
+    console.log('✅ Redis service initialized successfully');
     redisInitialized = true;
 
     // Test the connection
     const isReady = await redisService.getClient().ping();
-    console.log('Redis ping:', isReady);
+    console.log('✅ Redis ping:', isReady);
+
+    // Display connection details
+    const connectionInfo = redisService.getClient().options;
+    if (process.env.REDIS_URL) {
+      const sanitizedUrl = process.env.REDIS_URL.replace(/:[^:@]+@/, ':****@');
+      console.log('📡 Redis connected via URL:', sanitizedUrl);
+    } else {
+      console.log('📡 Redis connected via HOST/PORT:', {
+        host: process.env.REDIS_HOST || '127.0.0.1',
+        port: process.env.REDIS_PORT || 6379,
+      });
+    }
   } catch (error) {
-    console.error('Failed to initialize Redis:', error.message);
+    console.error('❌ Failed to initialize Redis:', error.message);
+    console.log('⚠️  Server will continue without Redis caching');
     redisInitialized = false;
   }
 }

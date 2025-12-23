@@ -5,3 +5,8 @@ seed-enhanced.js
 seed.js
 test-connection.js
 seed-extensive.js
+REDIS_CONFIG.md
+IMPLEMENTATION_SUMMARY.md
+
+test-redis.js
+.env.example

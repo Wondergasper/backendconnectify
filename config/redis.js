@@ -7,61 +7,118 @@ class RedisClient {
     this.isConnected = false;
   }
 
+  /**
+   * Build Redis configuration from environment variables
+   * Supports both URL-based and traditional host/port configuration
+   */
+  getRedisConfig() {
+    // Priority 1: Use REDIS_URL if provided (modern, cloud-ready)
+    if (process.env.REDIS_URL) {
+      console.log('📡 Using REDIS_URL for connection');
+      
+      const config = {
+        url: process.env.REDIS_URL,
+      };
+
+      // Add TLS configuration for secure connections (rediss://)
+      if (process.env.REDIS_URL.startsWith('rediss://')) {
+        config.socket = {
+          tls: true,
+          rejectUnauthorized: process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false',
+        };
+      }
+
+      return config;
+    }
+
+    // Priority 2: Fall back to traditional host/port/password
+    console.log('📡 Using REDIS_HOST/PORT for connection');
+    
+    const config = {
+      socket: {
+        host: process.env.REDIS_HOST || '127.0.0.1',
+        port: parseInt(process.env.REDIS_PORT || '6379', 10),
+      },
+    };
+
+    // Add password if provided
+    if (process.env.REDIS_PASSWORD) {
+      config.password = process.env.REDIS_PASSWORD;
+    }
+
+    // Add username if provided (Redis 6+)
+    if (process.env.REDIS_USERNAME) {
+      config.username = process.env.REDIS_USERNAME;
+    }
+
+    return config;
+  }
+
   async connect() {
     try {
-      this.client = redis.createClient({
-        host: process.env.REDIS_HOST || '127.0.0.1',
-        port: process.env.REDIS_PORT || 6379,
-        password: process.env.REDIS_PASSWORD || undefined,
-        retry_strategy: (options) => {
-          if (options.error && options.error.code === 'ECONNREFUSED') {
-            console.error('Redis server connection refused');
-            return new Error('Could not connect to Redis server');
-          }
-          
-          if (options.total_retry_time > 1000 * 60 * 60) {
-            // End reconnecting after a specific timeout and flush all commands
-            return new Error('Retry time exhausted');
-          }
-          
-          if (options.attempt > 10) {
-            // End reconnecting with built in error
-            return undefined;
-          }
-          
-          // Reconnect after 1 second
-          return Math.min(options.attempt * 100, 3000);
-        },
-        connect_timeout: 30000,
-        family: 4, // 4 (IPv4) or 6 (IPv6)
-        socket_keepalive: true,
-      });
+      const config = this.getRedisConfig();
 
+      // Add common configuration options
+      const clientConfig = {
+        ...config,
+        socket: {
+          ...config.socket,
+          // Connection timeout
+          connectTimeout: parseInt(process.env.REDIS_CONNECT_TIMEOUT || '30000', 10),
+          // Keep the connection alive
+          keepAlive: true,
+          // Reconnection strategy
+          reconnectStrategy: (retries) => {
+            if (retries > 10) {
+              console.error('❌ Redis: Max reconnection attempts reached');
+              return false; // Stop reconnecting
+            }
+            
+            const delay = Math.min(retries * 100, 3000);
+            console.log(`🔄 Redis: Reconnecting in ${delay}ms (attempt ${retries})`);
+            return delay;
+          },
+        },
+        // Database number (default: 0)
+        database: parseInt(process.env.REDIS_DB || '0', 10),
+      };
+
+      // Create Redis client
+      this.client = redis.createClient(clientConfig);
+
+      // Event handlers
       this.client.on('error', (err) => {
-        console.error('Redis Client Error:', err);
+        console.error('❌ Redis Client Error:', err.message);
         this.isConnected = false;
       });
 
       this.client.on('connect', () => {
-        console.log('Redis Client Connected');
+        console.log('🔌 Redis Client Connected');
         this.isConnected = true;
       });
 
       this.client.on('ready', () => {
-        console.log('Redis Client Ready');
+        console.log('✅ Redis Client Ready');
         this.isConnected = true;
       });
 
       this.client.on('reconnecting', () => {
-        console.log('Redis Client Reconnecting...');
+        console.log('🔄 Redis Client Reconnecting...');
         this.isConnected = false;
       });
 
+      this.client.on('end', () => {
+        console.log('🔌 Redis Client Disconnected');
+        this.isConnected = false;
+      });
+
+      // Connect to Redis
       await this.client.connect();
-      console.log('Redis connection established successfully');
+      console.log('✅ Redis connection established successfully');
+      
       return this.client;
     } catch (error) {
-      console.error('Failed to connect to Redis:', error);
+      console.error('❌ Failed to connect to Redis:', error.message);
       throw error;
     }
   }
@@ -85,17 +142,44 @@ class RedisClient {
       const pingResult = await this.client.ping();
       return pingResult === 'PONG';
     } catch (error) {
-      console.error('Redis ping test failed:', error);
+      console.error('❌ Redis ping test failed:', error.message);
       return false;
     }
+  }
+
+  // Get connection info
+  getConnectionInfo() {
+    if (!this.client) {
+      return null;
+    }
+
+    return {
+      isConnected: this.isConnected,
+      isReady: this.client.isReady,
+      // Safe connection info (no passwords)
+      config: process.env.REDIS_URL 
+        ? { type: 'URL', url: process.env.REDIS_URL.replace(/:[^:@]+@/, ':****@') }
+        : { 
+            type: 'HOST/PORT', 
+            host: process.env.REDIS_HOST || '127.0.0.1',
+            port: process.env.REDIS_PORT || 6379,
+            hasPassword: !!process.env.REDIS_PASSWORD,
+          },
+    };
   }
 
   // Close connection
   async disconnect() {
     if (this.client) {
-      await this.client.quit();
-      this.isConnected = false;
-      console.log('Redis connection closed');
+      try {
+        await this.client.quit();
+        this.isConnected = false;
+        console.log('✅ Redis connection closed gracefully');
+      } catch (error) {
+        console.error('❌ Error closing Redis connection:', error.message);
+        // Force disconnect
+        await this.client.disconnect();
+      }
     }
   }
 }
