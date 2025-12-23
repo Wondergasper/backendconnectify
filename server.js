@@ -26,7 +26,8 @@ let socketCorsOrigin = process.env.CORS_ORIGIN || [
   'http://localhost:3000',
   'http://localhost:3001',
   'http://localhost:8080',  // Added to match frontend
-  'http://127.0.0.1:8080'   // Added to support both access methods
+  'http://127.0.0.1:8080',  // Added to support both access methods
+  'https://connectifynigeria.vercel.app'  // Production frontend on Vercel
 ];
 
 if (typeof socketCorsOrigin === 'string') {
@@ -61,7 +62,8 @@ let corsOrigin = process.env.CORS_ORIGIN || [
   'http://localhost:3000',  // Common React dev port
   'http://localhost:3001',  // Alternative React dev port
   'http://localhost:8080',  // Vite dev server port (matches vite.config.ts)
-  'http://127.0.0.1:8080'   // IP-based dev server port
+  'http://127.0.0.1:8080',  // IP-based dev server port
+  'https://connectifynigeria.vercel.app'  // Production frontend on Vercel
 ];
 
 if (typeof corsOrigin === 'string') {
@@ -73,7 +75,19 @@ if (typeof corsOrigin === 'string') {
 
 app.use(cors({
   origin: corsOrigin,
-  credentials: true // Enable credentials (cookies)
+  credentials: true, // Enable credentials (cookies)
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Requested-With',
+    'Accept',
+    'Origin'
+  ],
+  exposedHeaders: ['set-cookie'],
+  optionsSuccessStatus: 204,
+  preflightContinue: false,
+  maxAge: 86400 // 24 hours
 }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
