@@ -1,17 +1,59 @@
 // services/emailService.js
-const nodemailer = require('nodemailer');
+// Use require with fallback handling for nodemailer
+let nodemailer;
+try {
+  nodemailer = require('nodemailer');
+  // Handle both CommonJS and ES module exports
+  if (nodemailer.default) {
+    nodemailer = nodemailer.default;
+  }
+} catch (error) {
+  console.error('Failed to load nodemailer:', error.message);
+  nodemailer = null;
+}
 
 class EmailService {
   constructor() {
     this.transporter = null;
-    this.initTransporter();
+    this._initialized = false;
   }
 
-  initTransporter() {
+  // Lazy initialization - only create transporter when first needed
+  _ensureTransporter() {
+    if (this._initialized) {
+      return this.transporter !== null;
+    }
+
+    this._initialized = true;
+
+    if (!nodemailer) {
+      console.error('Nodemailer is not available. Email functionality disabled.');
+      return false;
+    }
+
+    if (typeof nodemailer.createTransport !== 'function' && typeof nodemailer.createTransporter !== 'function') {
+      console.error('Nodemailer.createTransport is not a function. Nodemailer version may be incompatible.');
+      console.error('Available nodemailer exports:', Object.keys(nodemailer));
+      return false;
+    }
+
+    // Use createTransport (correct method name) with fallback to createTransporter
+    const createTransport = nodemailer.createTransport || nodemailer.createTransporter;
+
+    try {
+      this.initTransporter(createTransport.bind(nodemailer));
+      return true;
+    } catch (error) {
+      console.error('Failed to initialize email transporter:', error.message);
+      return false;
+    }
+  }
+
+  initTransporter(createTransport) {
     // Create transporter based on environment
     if (process.env.NODE_ENV === 'production') {
       // Production: Use Zoho Mail SMTP (or other configured SMTP service)
-      this.transporter = nodemailer.createTransporter({
+      this.transporter = createTransport({
         host: process.env.SMTP_HOST || 'smtp.zoho.com',
         port: parseInt(process.env.SMTP_PORT) || 465,
         secure: process.env.SMTP_SECURE === 'true' || true, // true for 465 (Zoho default), false for 587
@@ -26,7 +68,7 @@ class EmailService {
 
       if (hasSmtpConfig) {
         // Use configured SMTP in development (allows testing with real Zoho Mail)
-        this.transporter = nodemailer.createTransporter({
+        this.transporter = createTransport({
           host: process.env.SMTP_HOST || 'smtp.zoho.com',
           port: parseInt(process.env.SMTP_PORT) || 465,
           secure: process.env.SMTP_SECURE === 'true' || true,
@@ -37,7 +79,7 @@ class EmailService {
         });
       } else {
         // Fallback to ethereal.email test service
-        this.transporter = nodemailer.createTransporter({
+        this.transporter = createTransport({
           host: "smtp.ethereal.email",
           port: 587,
           secure: false,
@@ -53,6 +95,10 @@ class EmailService {
 
   // Test email configuration
   async testConnection() {
+    if (!this._ensureTransporter()) {
+      console.log('Email transporter not available for connection test');
+      return false;
+    }
     try {
       const result = await this.transporter.verify();
       console.log('Email server connection verified:', result);
@@ -65,6 +111,10 @@ class EmailService {
 
   // Send booking confirmation email
   async sendBookingConfirmation(booking, recipientEmail, recipientName) {
+    if (!this._ensureTransporter()) {
+      console.log('Email transporter not available. Skipping booking confirmation email.');
+      return null;
+    }
     try {
       const mailOptions = {
         from: process.env.EMAIL_FROM || '"Connectify Nigeria" <noreply@connectify.ng>',
@@ -101,6 +151,10 @@ class EmailService {
 
   // Send booking status update email
   async sendBookingStatusUpdate(booking, status, recipientEmail, recipientName) {
+    if (!this._ensureTransporter()) {
+      console.log('Email transporter not available. Skipping booking status update email.');
+      return null;
+    }
     try {
       const statusMessages = {
         confirmed: 'Your booking has been confirmed and is ready for service.',
@@ -144,6 +198,10 @@ class EmailService {
 
   // Send welcome email
   async sendWelcomeEmail(user, recipientEmail, recipientName) {
+    if (!this._ensureTransporter()) {
+      console.log('Email transporter not available. Skipping welcome email.');
+      return null;
+    }
     try {
       const mailOptions = {
         from: process.env.EMAIL_FROM || '"Connectify Nigeria" <noreply@connectify.ng>',
@@ -178,6 +236,10 @@ class EmailService {
 
   // Send password reset email
   async sendPasswordReset(email, resetToken, recipientName) {
+    if (!this._ensureTransporter()) {
+      console.log('Email transporter not available. Skipping password reset email.');
+      return null;
+    }
     try {
       const resetLink = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password?token=${resetToken}`;
 
@@ -212,6 +274,10 @@ class EmailService {
 
   // Send verification request notification
   async sendVerificationRequestNotification(userId, documents, recipientEmail) {
+    if (!this._ensureTransporter()) {
+      console.log('Email transporter not available. Skipping verification request notification email.');
+      return null;
+    }
     try {
       const mailOptions = {
         from: process.env.EMAIL_FROM || '"Connectify Nigeria" <noreply@connectify.ng>',
@@ -245,6 +311,10 @@ class EmailService {
 
   // Send new booking notification to provider
   async sendNewBookingNotification(booking, providerEmail, providerName) {
+    if (!this._ensureTransporter()) {
+      console.log('Email transporter not available. Skipping new booking notification email.');
+      return null;
+    }
     try {
       const bookingDate = new Date(booking.date).toLocaleDateString('en-NG', {
         weekday: 'long',
@@ -328,6 +398,10 @@ class EmailService {
 
   // Send booking reminder email (1 day before)
   async sendBookingReminder(booking, recipientEmail, recipientName, recipientType = 'customer') {
+    if (!this._ensureTransporter()) {
+      console.log('Email transporter not available. Skipping booking reminder email.');
+      return null;
+    }
     try {
       const bookingDate = new Date(booking.date).toLocaleDateString('en-NG', {
         weekday: 'long',
@@ -417,6 +491,10 @@ class EmailService {
 
   // Send payment receipt to customer (payer)
   async sendPaymentReceipt(paymentData, recipientEmail, recipientName) {
+    if (!this._ensureTransporter()) {
+      console.log('Email transporter not available. Skipping payment receipt email.');
+      return null;
+    }
     try {
       const transactionDate = new Date().toLocaleDateString('en-NG', {
         weekday: 'long',
@@ -528,6 +606,10 @@ class EmailService {
 
   // Send payment received notification to provider
   async sendPaymentReceived(paymentData, recipientEmail, recipientName) {
+    if (!this._ensureTransporter()) {
+      console.log('Email transporter not available. Skipping payment received email.');
+      return null;
+    }
     try {
       const transactionDate = new Date().toLocaleDateString('en-NG', {
         weekday: 'long',
@@ -632,6 +714,10 @@ class EmailService {
 
   // Send funds added confirmation email
   async sendFundsAddedConfirmation(paymentData, recipientEmail, recipientName) {
+    if (!this._ensureTransporter()) {
+      console.log('Email transporter not available. Skipping funds added confirmation email.');
+      return null;
+    }
     try {
       const transactionDate = new Date().toLocaleDateString('en-NG', {
         weekday: 'long',
