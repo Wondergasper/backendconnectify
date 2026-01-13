@@ -126,7 +126,9 @@ const userSchema = new mongoose.Schema({
     type: String
   },
   resetPasswordToken: String,
-  resetPasswordExpire: Date
+  resetPasswordExpire: Date,
+  // Firebase Cloud Messaging token for push notifications
+  fcmToken: String
 }, {
   timestamps: true
 });

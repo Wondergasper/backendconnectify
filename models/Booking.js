@@ -73,7 +73,11 @@ const bookingSchema = new mongoose.Schema({
     comment: String,
     date: Date
   },
-  serviceImages: [String] // Images of service completion
+  serviceImages: [String], // Images of service completion
+  reminderSent: {
+    type: Boolean,
+    default: false
+  }
 }, {
   timestamps: true
 });
@@ -82,5 +86,6 @@ const bookingSchema = new mongoose.Schema({
 bookingSchema.index({ customer: 1, createdAt: -1 });
 bookingSchema.index({ provider: 1, createdAt: -1 });
 bookingSchema.index({ status: 1 });
+bookingSchema.index({ reminderSent: 1, date: 1, status: 1 }); // For reminder service queries
 
 module.exports = mongoose.model('Booking', bookingSchema);

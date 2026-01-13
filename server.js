@@ -10,10 +10,27 @@ require('dotenv').config();
 // Add morgan for logging HTTP requests
 const morgan = require('morgan');
 const redisService = require('./services/redisService'); // Import Redis service
+const bookingReminderService = require('./services/bookingReminderService'); // Import booking reminder service
 
-// Security check for JWT secret
-if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'fallback_secret_key') {
-  console.warn('WARNING: Using fallback JWT secret. Please set JWT_SECRET in .env for production use.');
+// CRITICAL: Validate required environment variables on startup
+const requiredEnvVars = [
+  'JWT_SECRET',
+  'MONGODB_URI'
+];
+
+const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
+
+if (missingVars.length > 0) {
+  console.error('❌ CRITICAL ERROR: Missing required environment variables:');
+  missingVars.forEach(varName => console.error(`   - ${varName}`));
+  console.error('\nPlease set these variables in your .env file and restart the server.');
+  process.exit(1);
+}
+
+// Additional validation for JWT_SECRET strength
+if (process.env.JWT_SECRET.length < 32) {
+  console.error('❌ CRITICAL ERROR: JWT_SECRET must be at least 32 characters long for security.');
+  process.exit(1);
 }
 
 const app = express();
@@ -25,8 +42,8 @@ let socketCorsOrigin = process.env.CORS_ORIGIN || [
   'http://localhost:5173',
   'http://localhost:3000',
   'http://localhost:3001',
-  'http://localhost:8080',  // Added to match frontend
-  'http://127.0.0.1:8080',  // Added to support both access methods
+  'http://localhost:8080',  // Matches Vite config
+  'http://127.0.0.1:8080',  // IP-based access
   'https://connectifynigeria.vercel.app'  // Production frontend on Vercel
 ];
 
@@ -55,8 +72,7 @@ app.set('io', io);
 // Logging middleware
 app.use(morgan('combined'));
 
-// Middleware
-// Parse CORS origin - if it's a comma-separated string, convert to array
+// CORS origins - Production URLs included
 let corsOrigin = process.env.CORS_ORIGIN || [
   'http://localhost:5173',  // Default Vite port
   'http://localhost:3000',  // Common React dev port
@@ -89,8 +105,23 @@ app.use(cors({
   preflightContinue: false,
   maxAge: 86400 // 24 hours
 }));
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Security middleware - CRITICAL: Protect against common attacks
+const {
+  securityHeaders,
+  xssProtection,
+  mongoSanitization,
+  hppProtection
+} = require('./middleware/security');
+
+app.use(securityHeaders);      // Helmet security headers
+app.use(xssProtection);        // XSS attack prevention
+app.use(mongoSanitization);    // NoSQL injection prevention
+app.use(hppProtection);        // HTTP Parameter Pollution prevention
+
+// Body parsing with size limits (reduced to prevent DoS)
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser()); // Add cookie parser middleware
 
 // Rate limiting configuration
@@ -221,6 +252,7 @@ const verificationRoutes = require('./routes/verification');
 const imageRoutes = require('./routes/images');
 const uploadRoutes = require('./routes/upload');
 const locationRoutes = require('./routes/location');
+const notifyRoutes = require('./routes/notify');
 
 // API routes
 app.use('/api/auth', authRateLimit, authRoutes);  // Apply stricter rate limit to auth endpoints
@@ -238,6 +270,7 @@ app.use('/api/verification', apiRateLimit, verificationRoutes);
 app.use('/api/images', apiRateLimit, imageRoutes);
 app.use('/api/upload', apiRateLimit, uploadRoutes);
 app.use('/api/location', apiRateLimit, locationRoutes);
+app.use('/api/notify', apiRateLimit, notifyRoutes);
 
 // Health check endpoint (with database and Redis status)
 app.get('/api/health', async (req, res) => {
@@ -255,7 +288,15 @@ app.get('/api/health', async (req, res) => {
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
-  res.status(500).json({ error: 'Something went wrong!', details: err.message });
+
+  // Don't expose error details in production
+  const errorResponse = { error: 'Something went wrong!' };
+  if (process.env.NODE_ENV !== 'production') {
+    errorResponse.details = err.message;
+    errorResponse.stack = err.stack;
+  }
+
+  res.status(err.statusCode || 500).json(errorResponse);
 });
 
 // 404 handler
@@ -305,11 +346,24 @@ const PORT = process.env.PORT || 5000;
     server.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
       console.log(`Redis initialized: ${redisInitialized}`);
+
+      // Start booking reminder service (sends reminders 1 day before booking)
+      bookingReminderService.start();
     });
   } catch (error) {
     console.error('Error starting server:', error);
     process.exit(1);
   }
 })();
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received. Shutting down gracefully...');
+  bookingReminderService.stop();
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
+});
 
 module.exports = app;

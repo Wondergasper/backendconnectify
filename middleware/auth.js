@@ -5,7 +5,7 @@ const crypto = require('crypto');
 // Function to generate refresh token and its hash
 const generateRefreshToken = (userId) => {
   // Create a longer-lived token
-  const refreshToken = jwt.sign({ userId }, process.env.JWT_SECRET || 'fallback_secret_key', {
+  const refreshToken = jwt.sign({ userId }, process.env.JWT_SECRET, {
     expiresIn: '7d' // 7 days
   });
 
@@ -34,7 +34,7 @@ const auth = async (req, res, next) => {
 
     try {
       // Try to verify the access token
-      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key');
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
       const user = await User.findById(decoded.userId).select('-password');
 
       if (!user) {
@@ -53,7 +53,7 @@ const auth = async (req, res, next) => {
 
       try {
         // Verify the refresh token
-        const refreshPayload = jwt.verify(refreshToken, process.env.JWT_SECRET || 'fallback_secret_key');
+        const refreshPayload = jwt.verify(refreshToken, process.env.JWT_SECRET);
 
         // Find user and check if the refresh token hash matches
         const user = await User.findById(refreshPayload.userId).select('+refreshToken');
@@ -78,7 +78,7 @@ const auth = async (req, res, next) => {
         // Generate new tokens
         const newAccessToken = jwt.sign(
           { userId: user._id },
-          process.env.JWT_SECRET || 'fallback_secret_key',
+          process.env.JWT_SECRET,
           { expiresIn: '15m' }
         );
 
@@ -92,14 +92,14 @@ const auth = async (req, res, next) => {
         res.cookie('accessToken', newAccessToken, {
           httpOnly: true,
           secure: process.env.NODE_ENV === 'production',
-          sameSite: 'lax',
+          sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
           maxAge: 15 * 60 * 1000 // 15 minutes
         });
 
         res.cookie('refreshToken', newRefreshToken, {
           httpOnly: true,
           secure: process.env.NODE_ENV === 'production',
-          sameSite: 'lax',
+          sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
           maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
         });
 

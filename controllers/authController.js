@@ -3,14 +3,11 @@ const User = require('../models/User');
 const { validationResult } = require('express-validator');
 const crypto = require('crypto');
 
-// Check if JWT secret is properly set
-if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'fallback_secret_key') {
-  console.warn('WARNING: Using fallback JWT secret in auth controller. Please set JWT_SECRET in .env for production use.');
-}
+// Environment validation is done in server.js on startup
 
 // Generate JWT access token
 const generateAccessToken = (userId) => {
-  return jwt.sign({ userId }, process.env.JWT_SECRET || 'fallback_secret_key', {
+  return jwt.sign({ userId }, process.env.JWT_SECRET, {
     expiresIn: '15m' // 15 minutes
   });
 };
@@ -18,7 +15,7 @@ const generateAccessToken = (userId) => {
 // Generate refresh token
 const generateRefreshToken = (userId) => {
   // Create a longer-lived token
-  const refreshToken = jwt.sign({ userId }, process.env.JWT_SECRET || 'fallback_secret_key', {
+  const refreshToken = jwt.sign({ userId }, process.env.JWT_SECRET, {
     expiresIn: '7d' // 7 days
   });
 
@@ -77,18 +74,18 @@ exports.register = async (req, res) => {
     user.refreshToken = refreshTokenHash;
     await user.save();
 
-    // Set HTTP-only cookies
+    // Set HTTP-only cookies with cross-origin support
     res.cookie('accessToken', accessToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production', // Set to true in production with HTTPS
-      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // 'none' required for cross-origin
       maxAge: 15 * 60 * 1000 // 15 minutes
     });
 
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production', // Set to true in production with HTTPS
-      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
     });
 
@@ -122,21 +119,23 @@ exports.login = async (req, res) => {
 
     const { email, phone, password } = req.body;
 
-    // Debug logging
-    console.log('Login attempt with:', { email, phone, hasPassword: !!password });
+    // Debug logging (development only)
+    if (process.env.NODE_ENV === 'development') {
+      console.log('Login attempt with:', { email: email ? '***' : null, phone: phone ? '***' : null });
+    }
 
     // Find user by email or phone
     const user = await User.findOne({
       $or: [{ email }, { phone }]
     }).select('+password'); // Include password in query
 
-    console.log('User lookup result:', {
-      userFound: !!user,
-      userId: user?._id,
-      emailMatch: email && user?.email === email,
-      phoneMatch: phone && user?.phone === phone,
-      passwordCheck: user ? await user.comparePassword(password) : false
-    });
+    if (process.env.NODE_ENV === 'development') {
+      console.log('User lookup result:', {
+        userFound: !!user,
+        emailMatch: email && user?.email === email,
+        phoneMatch: phone && user?.phone === phone
+      });
+    }
 
     if (!user || !(await user.comparePassword(password))) {
       return res.status(400).json({ error: 'Invalid credentials' });
@@ -150,18 +149,18 @@ exports.login = async (req, res) => {
     user.refreshToken = refreshTokenHash;
     await user.save();
 
-    // Set HTTP-only cookies
+    // Set HTTP-only cookies with cross-origin support
     res.cookie('accessToken', accessToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production', // Set to true in production with HTTPS
-      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
       maxAge: 15 * 60 * 1000 // 15 minutes
     });
 
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production', // Set to true in production with HTTPS
-      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
     });
 
@@ -216,7 +215,7 @@ exports.refreshToken = async (req, res) => {
 
     let payload;
     try {
-      payload = jwt.verify(refreshToken, process.env.JWT_SECRET || 'fallback_secret_key');
+      payload = jwt.verify(refreshToken, process.env.JWT_SECRET);
     } catch (error) {
       return res.status(403).json({ error: 'Invalid refresh token' });
     }
@@ -248,18 +247,18 @@ exports.refreshToken = async (req, res) => {
     user.refreshToken = newRefreshTokenHash;
     await user.save();
 
-    // Set HTTP-only cookies
+    // Set HTTP-only cookies with cross-origin support
     res.cookie('accessToken', newAccessToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production', // Set to true in production with HTTPS
-      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
       maxAge: 15 * 60 * 1000 // 15 minutes
     });
 
     res.cookie('refreshToken', newRefreshToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production', // Set to true in production with HTTPS
-      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
     });
 
@@ -290,17 +289,17 @@ exports.logout = async (req, res) => {
       await User.findByIdAndUpdate(req.user._id, { refreshToken: undefined });
     }
 
-    // Clear cookies
+    // Clear cookies with matching settings
     res.clearCookie('accessToken', {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax'
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
     });
 
     res.clearCookie('refreshToken', {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax'
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
     });
 
     res.json({
@@ -425,10 +424,14 @@ exports.forgotPassword = async (req, res) => {
     const message = `You are receiving this email because you (or someone else) has requested the reset of a password. Please make a PUT request to: \n\n ${resetUrl}`;
 
     try {
-      // TODO: Implement actual email sending here using nodemailer
-      // For now, we'll just log the token to the console for development
-      console.log('Reset Password Token:', resetToken);
-      console.log('Reset Password URL:', resetUrl);
+      // Send password reset email
+      const emailService = require('../services/emailService');
+      await emailService.sendPasswordReset(email, resetToken, user.name);
+
+      // Development-only logging (NEVER log tokens in production)
+      if (process.env.NODE_ENV === 'development') {
+        console.log('Reset Password URL:', resetUrl);
+      }
 
       res.status(200).json({ success: true, data: 'Email sent' });
     } catch (err) {

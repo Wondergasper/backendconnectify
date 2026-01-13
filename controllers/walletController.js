@@ -2,6 +2,8 @@ const WalletTransaction = require('../models/WalletTransaction');
 const User = require('../models/User');
 const Booking = require('../models/Booking');
 const mongoose = require('mongoose');
+const emailService = require('../services/emailService');
+const { validationResult } = require('express-validator');
 
 // Get user wallet balance
 exports.getWalletBalance = async (req, res) => {
@@ -59,6 +61,12 @@ exports.getTransactionHistory = async (req, res) => {
 // Process payment for booking
 exports.processBookingPayment = async (req, res) => {
   try {
+    // Check for validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array(), error: 'Validation failed' });
+    }
+
     const { bookingId } = req.body;
 
     const booking = await Booking.findById(bookingId).populate('service');
@@ -82,6 +90,9 @@ exports.processBookingPayment = async (req, res) => {
       return res.status(400).json({ error: 'Insufficient balance' });
     }
 
+    // Store previous balances for email
+    const customerPreviousBalance = user.wallet.balance;
+
     // Process the payment
     const session = await mongoose.startSession();
     session.startTransaction();
@@ -97,13 +108,14 @@ exports.processBookingPayment = async (req, res) => {
       await user.save();
 
       // Create wallet transaction record
+      const transactionReference = `TXN_${Date.now()}_${booking._id}`;
       const transaction = new WalletTransaction({
         user: req.user._id,
         type: 'debit',
         amount: booking.totalAmount,
         currency: booking.currency,
         description: `Payment for ${booking.service.name} service (Booking ID: ${booking._id})`,
-        reference: `TXN_${Date.now()}_${booking._id}`,
+        reference: transactionReference,
         status: 'completed',
         metadata: {
           bookingId: booking._id,
@@ -114,6 +126,8 @@ exports.processBookingPayment = async (req, res) => {
 
       // Transfer funds to provider (this is simplified - in a real app, you might want to hold funds temporarily)
       const provider = await User.findById(booking.provider);
+      const providerPreviousBalance = provider.wallet.balance;
+
       provider.wallet.balance += booking.totalAmount;
       provider.wallet.transactions.push({
         type: 'credit',
@@ -123,13 +137,14 @@ exports.processBookingPayment = async (req, res) => {
       await provider.save();
 
       // Create provider transaction record
+      const providerTransactionReference = `TXN_${Date.now()}_${booking.provider}`;
       const providerTransaction = new WalletTransaction({
         user: booking.provider,
         type: 'credit',
         amount: booking.totalAmount,
         currency: booking.currency,
         description: `Payment received for ${booking.service.name} service (Booking ID: ${booking._id})`,
-        reference: `TXN_${Date.now()}_${booking.provider}`,
+        reference: providerTransactionReference,
         status: 'completed',
         metadata: {
           bookingId: booking._id,
@@ -143,6 +158,47 @@ exports.processBookingPayment = async (req, res) => {
       await booking.save();
 
       await session.commitTransaction();
+
+      // Send payment receipt emails (async, don't wait)
+      try {
+        // Send receipt to customer
+        const customerPaymentData = {
+          amount: booking.totalAmount,
+          reference: transactionReference,
+          serviceName: booking.service.name,
+          providerName: provider.name,
+          bookingId: booking._id.toString(),
+          previousBalance: customerPreviousBalance,
+          newBalance: user.wallet.balance
+        };
+
+        emailService.sendPaymentReceipt(
+          customerPaymentData,
+          user.email,
+          user.name
+        ).catch(err => console.error('Failed to send payment receipt to customer:', err));
+
+        // Send payment received notification to provider
+        const providerPaymentData = {
+          amount: booking.totalAmount,
+          reference: providerTransactionReference,
+          serviceName: booking.service.name,
+          customerName: user.name,
+          bookingId: booking._id.toString(),
+          previousBalance: providerPreviousBalance,
+          newBalance: provider.wallet.balance
+        };
+
+        emailService.sendPaymentReceived(
+          providerPaymentData,
+          provider.email,
+          provider.name
+        ).catch(err => console.error('Failed to send payment received email to provider:', err));
+
+      } catch (emailError) {
+        console.error('Email notification error:', emailError);
+        // Don't fail the payment if email fails
+      }
 
       res.json({
         success: true,
@@ -164,13 +220,26 @@ exports.processBookingPayment = async (req, res) => {
 // Add funds to wallet (simplified - in real app, integrate with payment provider)
 exports.addFunds = async (req, res) => {
   try {
-    const { amount } = req.body;
+    // Check for validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array(), error: 'Validation failed' });
+    }
 
-    if (amount <= 0) {
-      return res.status(400).json({ error: 'Amount must be greater than 0' });
+    // Parse and sanitize amount
+    const amount = parseFloat(req.body.amount);
+
+    if (isNaN(amount) || amount <= 0) {
+      return res.status(400).json({ error: 'Amount must be a positive number' });
+    }
+
+    // Additional security: prevent extremely large amounts
+    if (amount > 10000000) {
+      return res.status(400).json({ error: 'Amount exceeds maximum allowed (₦10,000,000)' });
     }
 
     const user = await User.findById(req.user._id);
+    const previousBalance = user.wallet.balance;
 
     // In a real app, you would process actual payment here
     // For now, just adding funds (simulated)
@@ -183,16 +252,37 @@ exports.addFunds = async (req, res) => {
     await user.save();
 
     // Create transaction record
+    const transactionReference = `DEP_${Date.now()}_${req.user._id}`;
     const transaction = new WalletTransaction({
       user: req.user._id,
       type: 'credit',
       amount,
       currency: user.wallet.currency,
       description: 'Added funds to wallet',
-      reference: `DEP_${Date.now()}_${req.user._id}`,
+      reference: transactionReference,
       status: 'completed'
     });
     await transaction.save();
+
+    // Send funds added confirmation email (async, don't wait)
+    try {
+      const paymentData = {
+        amount: amount,
+        reference: transactionReference,
+        previousBalance: previousBalance,
+        newBalance: user.wallet.balance
+      };
+
+      emailService.sendFundsAddedConfirmation(
+        paymentData,
+        user.email,
+        user.name
+      ).catch(err => console.error('Failed to send funds added confirmation email:', err));
+
+    } catch (emailError) {
+      console.error('Email notification error:', emailError);
+      // Don't fail the transaction if email fails
+    }
 
     res.json({
       success: true,

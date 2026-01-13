@@ -46,7 +46,7 @@ exports.getUsers = async (req, res) => {
 exports.getUserById = async (req, res) => {
   try {
     const user = await User.findById(req.params.id).select('-password');
-    
+
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
@@ -65,7 +65,7 @@ exports.getUserById = async (req, res) => {
 exports.updateUser = async (req, res) => {
   try {
     const { name, email, phone, role, profile, providerDetails } = req.body;
-    
+
     const updateData = {};
     if (name) updateData.name = name;
     if (email) updateData.email = email;
@@ -98,7 +98,7 @@ exports.updateUser = async (req, res) => {
 exports.deleteUser = async (req, res) => {
   try {
     const user = await User.findByIdAndDelete(req.params.id);
-    
+
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
@@ -110,5 +110,36 @@ exports.deleteUser = async (req, res) => {
   } catch (error) {
     console.error('Delete user error:', error);
     res.status(500).json({ error: 'Server error' });
+  }
+};
+
+// Register FCM token for push notifications
+exports.registerFcmToken = async (req, res) => {
+  try {
+    const { fcmToken } = req.body;
+
+    if (!fcmToken) {
+      return res.status(400).json({
+        success: false,
+        error: 'FCM token is required'
+      });
+    }
+
+    await User.findByIdAndUpdate(
+      req.user._id,
+      { fcmToken },
+      { new: true }
+    );
+
+    res.json({
+      success: true,
+      message: 'FCM token registered successfully'
+    });
+  } catch (error) {
+    console.error('Register FCM token error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to register FCM token'
+    });
   }
 };

@@ -1,5 +1,5 @@
 const express = require('express');
-const { 
+const {
   createBooking,
   getUserBookings,
   getBookingById,
@@ -7,6 +7,7 @@ const {
   addRating
 } = require('../controllers/bookingController');
 const { auth } = require('../middleware/auth');
+const bookingReminderService = require('../services/bookingReminderService');
 
 const router = express.Router();
 
@@ -34,5 +35,22 @@ router.put('/:id', auth, updateBookingStatus);
 // @desc    Add rating to booking
 // @access  Private
 router.post('/:id/rating', auth, addRating);
+
+// @route   POST api/bookings/reminders/trigger
+// @desc    Manually trigger booking reminder emails (for testing/admin)
+// @access  Private (should be admin only in production)
+router.post('/reminders/trigger', auth, async (req, res) => {
+  try {
+    const result = await bookingReminderService.triggerReminders();
+    res.json({
+      success: true,
+      message: 'Booking reminders processed',
+      ...result
+    });
+  } catch (error) {
+    console.error('Error triggering reminders:', error);
+    res.status(500).json({ error: 'Failed to trigger reminders' });
+  }
+});
 
 module.exports = router;

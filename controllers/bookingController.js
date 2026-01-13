@@ -2,6 +2,7 @@ const Booking = require('../models/Booking');
 const User = require('../models/User');
 const Service = require('../models/Service');
 const Notification = require('../models/Notification');
+const emailService = require('../services/emailService');
 
 // Create a new booking
 exports.createBooking = async (req, res) => {
@@ -47,10 +48,10 @@ exports.createBooking = async (req, res) => {
 
     // Populate the booking for response
     await booking.populate('service', 'name price provider');
-    await booking.populate('customer', 'name profile.avatar');
-    await booking.populate('provider', 'name profile.avatar');
+    await booking.populate('customer', 'name email profile.avatar');
+    await booking.populate('provider', 'name email profile.avatar');
 
-    // Create notifications
+    // Create in-app notification
     await Notification.create({
       user: service.provider,
       title: 'New Booking Request',
@@ -61,6 +62,29 @@ exports.createBooking = async (req, res) => {
         serviceId: service._id
       }
     });
+
+    // Send email notification to provider (async, don't wait)
+    try {
+      const bookingEmailData = {
+        _id: booking._id,
+        date: booking.date,
+        time: booking.time,
+        address: booking.address,
+        notes: booking.notes,
+        totalAmount: booking.totalAmount,
+        customerName: booking.customer.name,
+        serviceName: service.name
+      };
+
+      emailService.sendNewBookingNotification(
+        bookingEmailData,
+        booking.provider.email,
+        booking.provider.name
+      ).catch(err => console.error('Failed to send booking email to provider:', err));
+    } catch (emailError) {
+      console.error('Email notification error:', emailError);
+      // Don't fail the booking creation if email fails
+    }
 
     res.status(201).json({
       success: true,
@@ -81,7 +105,7 @@ exports.getUserBookings = async (req, res) => {
     const type = req.query.type; // 'customer' or 'provider'
 
     const query = {};
-    
+
     if (type === 'provider') {
       query.provider = req.user._id;
     } else {
