@@ -37,8 +37,8 @@ const app = express();
 const server = http.createServer(app);
 
 // Configure Socket.IO with CORS
-// Parse CORS origin for Socket.IO as well
-let socketCorsOrigin = process.env.CORS_ORIGIN || [
+// Default origins that should ALWAYS be allowed for Socket.IO
+const socketDefaultOrigins = [
   'http://localhost:5173',
   'http://localhost:3000',
   'http://localhost:3001',
@@ -47,12 +47,18 @@ let socketCorsOrigin = process.env.CORS_ORIGIN || [
   'https://connectifynigeria.vercel.app'  // Production frontend on Vercel
 ];
 
-if (typeof socketCorsOrigin === 'string') {
-  // If it's a comma-separated string, split into array
-  if (socketCorsOrigin.includes(',')) {
-    socketCorsOrigin = socketCorsOrigin.split(',').map(origin => origin.trim());
+// Parse environment variable origins if provided for Socket.IO
+let socketEnvOrigins = [];
+if (process.env.CORS_ORIGIN) {
+  if (process.env.CORS_ORIGIN.includes(',')) {
+    socketEnvOrigins = process.env.CORS_ORIGIN.split(',').map(origin => origin.trim());
+  } else {
+    socketEnvOrigins = [process.env.CORS_ORIGIN.trim()];
   }
 }
+
+// Merge default and env origins, removing duplicates
+const socketCorsOrigin = [...new Set([...socketDefaultOrigins, ...socketEnvOrigins])];
 
 const io = socketIo(server, {
   cors: {
@@ -73,7 +79,8 @@ app.set('io', io);
 app.use(morgan('combined'));
 
 // CORS origins - Production URLs included
-let corsOrigin = process.env.CORS_ORIGIN || [
+// Default origins that should ALWAYS be allowed
+const defaultOrigins = [
   'http://localhost:5173',  // Default Vite port
   'http://localhost:3000',  // Common React dev port
   'http://localhost:3001',  // Alternative React dev port
@@ -82,12 +89,18 @@ let corsOrigin = process.env.CORS_ORIGIN || [
   'https://connectifynigeria.vercel.app'  // Production frontend on Vercel
 ];
 
-if (typeof corsOrigin === 'string') {
-  // If it's a comma-separated string, split into array
-  if (corsOrigin.includes(',')) {
-    corsOrigin = corsOrigin.split(',').map(origin => origin.trim());
+// Parse environment variable origins if provided
+let envOrigins = [];
+if (process.env.CORS_ORIGIN) {
+  if (process.env.CORS_ORIGIN.includes(',')) {
+    envOrigins = process.env.CORS_ORIGIN.split(',').map(origin => origin.trim());
+  } else {
+    envOrigins = [process.env.CORS_ORIGIN.trim()];
   }
 }
+
+// Merge default and env origins, removing duplicates
+let corsOrigin = [...new Set([...defaultOrigins, ...envOrigins])];
 
 app.use(cors({
   origin: corsOrigin,
