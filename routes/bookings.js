@@ -6,7 +6,7 @@ const {
   updateBookingStatus,
   addRating
 } = require('../controllers/bookingController');
-const { auth } = require('../middleware/auth');
+const { auth, checkRole } = require('../middleware/auth');
 const bookingReminderService = require('../services/bookingReminderService');
 
 const router = express.Router();
@@ -39,7 +39,7 @@ router.post('/:id/rating', auth, addRating);
 // @route   POST api/bookings/reminders/trigger
 // @desc    Manually trigger booking reminder emails (for testing/admin)
 // @access  Private (should be admin only in production)
-router.post('/reminders/trigger', auth, async (req, res) => {
+router.post('/reminders/trigger', auth, checkRole(['admin']), async (req, res) => {
   try {
     const result = await bookingReminderService.triggerReminders();
     res.json({

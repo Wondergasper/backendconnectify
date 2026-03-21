@@ -14,7 +14,7 @@ const securityHeaders = helmet({
       fontSrc: ["'self'", 'https://fonts.gstatic.com'],
       imgSrc: ["'self'", 'data:', 'https:', 'http:'],
       scriptSrc: ["'self'"],
-      connectSrc: ["'self'", 'https://*.cloudinary.com'],
+      connectSrc: ["'self'", 'https://*.supabase.co', 'https://*.supabase.com'],
     },
   },
   hsts: {

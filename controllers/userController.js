@@ -65,12 +65,18 @@ exports.getUserById = async (req, res) => {
 exports.updateUser = async (req, res) => {
   try {
     const { name, email, phone, role, profile, providerDetails } = req.body;
+    const isAdmin = req.user?.role === 'admin';
+    const isSelf = req.user?._id?.toString() === req.params.id;
+
+    if (!isAdmin && !isSelf) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
 
     const updateData = {};
     if (name) updateData.name = name;
     if (email) updateData.email = email;
     if (phone) updateData.phone = phone;
-    if (role) updateData.role = role;
+    if (role && isAdmin) updateData.role = role;
     if (profile) updateData.profile = profile;
     if (providerDetails) updateData.providerDetails = providerDetails;
 

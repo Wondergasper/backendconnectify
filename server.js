@@ -200,17 +200,32 @@ async function initializeRedis() {
   }
 }
 
-// Socket.IO middleware for authentication using JWT
+// Socket.IO middleware for authentication using the same token as HTTP auth
 const jwt = require('jsonwebtoken');
+const parseCookieHeader = (cookieHeader = '') => {
+  return cookieHeader.split(';').reduce((acc, part) => {
+    const [rawKey, ...rawValue] = part.split('=');
+    if (!rawKey || rawValue.length === 0) return acc;
+
+    const key = rawKey.trim();
+    const value = rawValue.join('=').trim();
+    acc[key] = decodeURIComponent(value);
+    return acc;
+  }, {});
+};
+
 io.use((socket, next) => {
-  const token = socket.handshake.auth.token;
-
-  if (!token) {
-    return next(new Error('Authentication error: No token provided'));
-  }
-
-  // Verify JWT token
   try {
+    const cookies = parseCookieHeader(socket.handshake.headers.cookie || '');
+    const token =
+      socket.handshake.auth?.token ||
+      cookies.accessToken ||
+      socket.handshake.headers.authorization?.replace('Bearer ', '');
+
+    if (!token) {
+      return next(new Error('Authentication error: No token provided'));
+    }
+
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     socket.userId = decoded.userId;
     socket.userRole = decoded.role;

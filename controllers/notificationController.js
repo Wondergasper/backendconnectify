@@ -1,33 +1,41 @@
-const Notification = require('../models/Notification');
+const inappService = require('../services/notification/inappService');
 
-// Get user notifications
-exports.getNotifications = async (req, res) => {
+const getNotifications = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 10;
     const type = req.query.type;
-    const read = req.query.read; // 'true' or 'false'
+    const read = req.query.read;
+    const readFilter = read === 'true' ? true : read === 'false' ? false : undefined;
 
-    const query = { user: req.user._id };
-    
-    if (type) query.type = type;
-    if (read !== undefined) query.read = read === 'true';
+    const notifications = await inappService.getUserNotifications(
+      req.user._id,
+      page * limit,
+      readFilter === false
+    );
 
-    const notifications = await Notification.find(query)
-      .sort({ createdAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
+    const filtered = notifications.filter((notification) => {
+      if (type && notification.type !== type) {
+        return false;
+      }
 
-    const total = await Notification.countDocuments(query);
+      if (readFilter !== undefined && Boolean(notification.read) !== readFilter) {
+        return false;
+      }
+
+      return true;
+    });
+
+    const paged = filtered.slice((page - 1) * limit, (page - 1) * limit + limit);
 
     res.json({
       success: true,
-      data: notifications,
+      data: paged,
       pagination: {
         page,
         limit,
-        total,
-        pages: Math.ceil(total / limit)
+        total: filtered.length,
+        pages: Math.ceil(filtered.length / limit)
       }
     });
   } catch (error) {
@@ -36,16 +44,11 @@ exports.getNotifications = async (req, res) => {
   }
 };
 
-// Mark notification as read
-exports.markAsRead = async (req, res) => {
+const markAsRead = async (req, res) => {
   try {
     const { notificationId } = req.params;
 
-    const notification = await Notification.findOneAndUpdate(
-      { _id: notificationId, user: req.user._id },
-      { read: true, readAt: new Date() },
-      { new: true }
-    );
+    const notification = await inappService.markAsRead(notificationId, req.user._id);
 
     if (!notification) {
       return res.status(404).json({ error: 'Notification not found' });
@@ -61,13 +64,9 @@ exports.markAsRead = async (req, res) => {
   }
 };
 
-// Mark all notifications as read
-exports.markAllAsRead = async (req, res) => {
+const markAllAsRead = async (req, res) => {
   try {
-    await Notification.updateMany(
-      { user: req.user._id, read: false },
-      { read: true, readAt: new Date() }
-    );
+    await inappService.markAllAsRead(req.user._id);
 
     res.json({
       success: true,
@@ -79,17 +78,13 @@ exports.markAllAsRead = async (req, res) => {
   }
 };
 
-// Delete notification
-exports.deleteNotification = async (req, res) => {
+const deleteNotification = async (req, res) => {
   try {
     const { notificationId } = req.params;
 
-    const notification = await Notification.findOneAndDelete({
-      _id: notificationId,
-      user: req.user._id
-    });
+    const deleted = await inappService.deleteNotification(notificationId, req.user._id);
 
-    if (!notification) {
+    if (!deleted) {
       return res.status(404).json({ error: 'Notification not found' });
     }
 
@@ -101,4 +96,11 @@ exports.deleteNotification = async (req, res) => {
     console.error('Delete notification error:', error);
     res.status(500).json({ error: 'Server error' });
   }
+};
+
+module.exports = {
+  getNotifications,
+  markAsRead,
+  markAllAsRead,
+  deleteNotification
 };

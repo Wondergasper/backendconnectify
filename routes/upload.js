@@ -38,21 +38,19 @@ router.post('/profile-image', auth, upload.single('image'), async (req, res) => 
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    // Check if Cloudinary is configured
+    // Check if Supabase storage is configured
     if (!cloudStorageService.isConfigured()) {
       return res.status(500).json({ error: 'Cloud storage is not configured' });
     }
 
-    // Upload to Cloudinary
+    // Upload to Supabase Storage
     const result = await cloudStorageService.uploadFile(
       req.file.buffer,
       'connectify/users/profiles',
       {
         public_id: `user_${req.user._id}_${Date.now()}`,
-        transformation: [
-          { width: 400, height: 400, crop: 'fill', gravity: 'face' },
-          { quality: 'auto', fetch_format: 'auto' }
-        ]
+        mimetype: req.file.mimetype,
+        contentType: req.file.mimetype
       }
     );
 
@@ -88,17 +86,15 @@ router.post('/portfolio', auth, upload.array('images', 10), async (req, res) => 
       return res.status(500).json({ error: 'Cloud storage is not configured' });
     }
 
-    // Upload all files to Cloudinary
+    // Upload all files to Supabase Storage
     const uploadPromises = req.files.map((file, index) =>
       cloudStorageService.uploadFile(
         file.buffer,
         'connectify/portfolio',
         {
           public_id: `portfolio_${req.user._id}_${Date.now()}_${index}`,
-          transformation: [
-            { width: 1200, height: 900, crop: 'limit' },
-            { quality: 'auto', fetch_format: 'auto' }
-          ]
+          mimetype: file.mimetype,
+          contentType: file.mimetype
         }
       )
     );
@@ -156,14 +152,15 @@ router.post('/verification', auth, upload.array('documents', 5), async (req, res
       return res.status(500).json({ error: 'Cloud storage is not configured' });
     }
 
-    // Upload all files to Cloudinary
+    // Upload all files to Supabase Storage
     const uploadPromises = req.files.map((file, index) =>
       cloudStorageService.uploadFile(
         file.buffer,
         'connectify/verification',
         {
           public_id: `verification_${req.user._id}_${Date.now()}_${index}`,
-          resource_type: 'auto' // Allow PDFs and images
+          mimetype: file.mimetype,
+          contentType: file.mimetype
         }
       )
     );
@@ -199,7 +196,7 @@ router.delete('/portfolio/:publicId', auth, async (req, res) => {
   try {
     const { publicId } = req.params;
 
-    // Delete from Cloudinary
+    // Delete from Supabase Storage
     await cloudStorageService.deleteFile(publicId);
 
     // Remove from user portfolio using new structure

@@ -38,6 +38,7 @@ exports.register = async (req, res) => {
     }
 
     const { name, email, phone, password, role } = req.body;
+    const safeRole = ['customer', 'provider'].includes(role) ? role : 'customer';
 
     // Check if user already exists
     let user = await User.findOne({
@@ -61,7 +62,7 @@ exports.register = async (req, res) => {
       email,
       phone,
       password,
-      role: role || 'customer'
+      role: safeRole
     });
 
     await user.save();
@@ -322,8 +323,13 @@ exports.updateProfile = async (req, res) => {
     // Handle top-level fields
     if (name) updateData.name = name;
     if (phone) updateData.phone = phone;
-    if (role && ['customer', 'provider'].includes(role)) {
-      updateData.role = role;
+    if (role !== undefined) {
+      if (req.user?.role !== 'admin') {
+        return res.status(403).json({ error: 'Only admins can change user roles' });
+      }
+      if (['customer', 'provider', 'admin'].includes(role)) {
+        updateData.role = role;
+      }
     }
 
     // Handle profile object (preferred structure from onboarding)

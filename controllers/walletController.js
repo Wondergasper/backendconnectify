@@ -105,7 +105,7 @@ exports.processBookingPayment = async (req, res) => {
         amount: booking.totalAmount,
         description: `Payment for ${booking.service.name} service`
       });
-      await user.save();
+      await user.save({ session });
 
       // Create wallet transaction record
       const transactionReference = `TXN_${Date.now()}_${booking._id}`;
@@ -122,7 +122,7 @@ exports.processBookingPayment = async (req, res) => {
           providerId: booking.provider
         }
       });
-      await transaction.save();
+      await transaction.save({ session });
 
       // Transfer funds to provider (this is simplified - in a real app, you might want to hold funds temporarily)
       const provider = await User.findById(booking.provider);
@@ -134,7 +134,7 @@ exports.processBookingPayment = async (req, res) => {
         amount: booking.totalAmount,
         description: `Payment received for ${booking.service.name} service`
       });
-      await provider.save();
+      await provider.save({ session });
 
       // Create provider transaction record
       const providerTransactionReference = `TXN_${Date.now()}_${booking.provider}`;
@@ -151,11 +151,11 @@ exports.processBookingPayment = async (req, res) => {
           providerId: booking.provider
         }
       });
-      await providerTransaction.save();
+      await providerTransaction.save({ session });
 
       // Update booking payment status
       booking.paymentStatus = 'paid';
-      await booking.save();
+      await booking.save({ session });
 
       await session.commitTransaction();
 

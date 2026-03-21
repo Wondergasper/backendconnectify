@@ -1,192 +1,217 @@
-// services/cloudStorageService.js
-const cloudinary = require('cloudinary').v2;
+const { createClient } = require('@supabase/supabase-js');
 
-class CloudStorageService {
+class SupabaseStorageService {
   constructor() {
-    this.initCloudinary();
+    this.supabaseUrl = process.env.SUPABASE_URL;
+    this.supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    this.bucket = process.env.SUPABASE_STORAGE_BUCKET || 'connectify-uploads';
+    this.client = null;
+
+    this.initSupabase();
   }
 
-  initCloudinary() {
-    cloudinary.config({
-      cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-      api_key: process.env.CLOUDINARY_API_KEY,
-      api_secret: process.env.CLOUDINARY_API_SECRET,
-      secure: true
+  initSupabase() {
+    if (!this.supabaseUrl || !this.supabaseServiceKey) {
+      return;
+    }
+
+    this.client = createClient(this.supabaseUrl, this.supabaseServiceKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
     });
   }
 
-  // Upload single file
-  async uploadFile(fileBuffer, folder = 'connectify', options = {}) {
-    try {
-      return new Promise((resolve, reject) => {
-        const stream = cloudinary.uploader.upload_stream(
-          {
-            folder: folder,
-            resource_type: 'auto',
-            ...options
-          },
-          (error, result) => {
-            if (error) {
-              console.error('Cloudinary upload error:', error);
-              reject(error);
-            } else {
-              resolve(result);
-            }
-          }
-        );
+  isConfigured() {
+    return Boolean(this.client && this.bucket);
+  }
 
-        // Convert buffer to stream and pipe to upload
-        const { Readable } = require('stream');
-        const bufferStream = Readable.from(fileBuffer);
-        bufferStream.pipe(stream);
-      });
+  getExtension(fileName = '', mimeType = '') {
+    const lowerName = fileName.toLowerCase();
+
+    if (lowerName.endsWith('.png')) return '.png';
+    if (lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg')) return '.jpg';
+    if (lowerName.endsWith('.webp')) return '.webp';
+    if (lowerName.endsWith('.gif')) return '.gif';
+    if (lowerName.endsWith('.pdf')) return '.pdf';
+
+    if (mimeType === 'image/png') return '.png';
+    if (mimeType === 'image/webp') return '.webp';
+    if (mimeType === 'image/gif') return '.gif';
+    if (mimeType === 'application/pdf') return '.pdf';
+
+    return '.jpg';
+  }
+
+  buildPath(folder, fileName, mimeType = '') {
+    const safeFolder = String(folder || 'connectify')
+      .replace(/^\/+|\/+$/g, '')
+      .replace(/\\/g, '/');
+    const safeName = String(fileName || `file_${Date.now()}`).replace(/\s+/g, '_');
+    const extension = this.getExtension(safeName, mimeType);
+    const baseName = safeName.includes('.') ? safeName : `${safeName}${extension}`;
+
+    return `${safeFolder}/${baseName}`.replace(/\/+/g, '/');
+  }
+
+  async uploadFile(fileBuffer, folder = 'connectify', options = {}) {
+    if (!this.isConfigured()) {
+      throw new Error('Supabase storage is not configured');
+    }
+
+    try {
+      const fileName = options.public_id || options.fileName || `upload_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const mimeType = options.contentType || options.mimetype || 'application/octet-stream';
+      const filePath = this.buildPath(folder, fileName, mimeType);
+      const body = Buffer.isBuffer(fileBuffer) ? fileBuffer : Buffer.from(fileBuffer);
+
+      const { error } = await this.client.storage
+        .from(this.bucket)
+        .upload(filePath, body, {
+          contentType: mimeType,
+          upsert: Boolean(options.upsert)
+        });
+
+      if (error) {
+        throw error;
+      }
+
+      const { data } = this.client.storage.from(this.bucket).getPublicUrl(filePath);
+
+      return {
+        public_id: filePath,
+        secure_url: data.publicUrl,
+        path: filePath
+      };
     } catch (error) {
-      console.error('Upload file error:', error);
+      console.error('Supabase upload error:', error);
       throw error;
     }
   }
 
-  // Upload multiple files
   async uploadMultipleFiles(files, folder = 'connectify', options = {}) {
     try {
-      const uploadPromises = files.map(file => 
-        this.uploadFile(file.buffer, folder, options)
+      const uploadPromises = files.map((file, index) =>
+        this.uploadFile(file.buffer, folder, {
+          ...options,
+          public_id: options.public_id
+            ? `${options.public_id}_${index}`
+            : `${file.originalname || 'file'}_${Date.now()}_${index}`,
+          mimetype: file.mimetype,
+          contentType: file.mimetype
+        })
       );
-      const results = await Promise.all(uploadPromises);
-      return results;
+
+      return await Promise.all(uploadPromises);
     } catch (error) {
       console.error('Upload multiple files error:', error);
       throw error;
     }
   }
 
-  // Upload file from URL
   async uploadFromUrl(url, folder = 'connectify', options = {}) {
+    if (!this.isConfigured()) {
+      throw new Error('Supabase storage is not configured');
+    }
+
     try {
-      const result = await cloudinary.uploader.upload(url, {
-        folder: folder,
-        resource_type: 'auto',
-        ...options
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch file from URL: ${response.status}`);
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      const contentType = response.headers.get('content-type') || options.contentType || 'application/octet-stream';
+      const fileName = options.public_id || `remote_${Date.now()}`;
+
+      return await this.uploadFile(buffer, folder, {
+        ...options,
+        public_id: fileName,
+        contentType
       });
-      return result;
     } catch (error) {
       console.error('Upload from URL error:', error);
       throw error;
     }
   }
 
-  // Delete file
   async deleteFile(publicId) {
+    if (!this.isConfigured()) {
+      throw new Error('Supabase storage is not configured');
+    }
+
     try {
-      const result = await cloudinary.uploader.destroy(publicId);
-      return result;
+      const { error } = await this.client.storage
+        .from(this.bucket)
+        .remove([publicId]);
+
+      if (error) {
+        throw error;
+      }
+
+      return { success: true };
     } catch (error) {
       console.error('Delete file error:', error);
       throw error;
     }
   }
 
-  // Delete multiple files
   async deleteMultipleFiles(publicIds) {
+    if (!this.isConfigured()) {
+      throw new Error('Supabase storage is not configured');
+    }
+
     try {
-      const result = await cloudinary.api.delete_resources(publicIds);
-      return result;
+      const { error } = await this.client.storage
+        .from(this.bucket)
+        .remove(publicIds);
+
+      if (error) {
+        throw error;
+      }
+
+      return { success: true };
     } catch (error) {
       console.error('Delete multiple files error:', error);
       throw error;
     }
   }
 
-  // Get file URL with transformations
-  getUrl(publicId, transformations = {}, resourceType = 'image') {
-    try {
-      return cloudinary.url(publicId, {
-        type: 'upload',
-        resource_type: resourceType,
-        secure: true,
-        ...transformations
-      });
-    } catch (error) {
-      console.error('Get URL error:', error);
-      throw error;
+  getUrl(publicId) {
+    if (!this.isConfigured()) {
+      throw new Error('Supabase storage is not configured');
     }
+
+    const { data } = this.client.storage.from(this.bucket).getPublicUrl(publicId);
+    return data.publicUrl;
   }
 
-  // Upload user profile image
   async uploadProfileImage(fileBuffer, userId) {
-    try {
-      const result = await cloudinary.uploader.upload(fileBuffer, {
-        folder: 'connectify/users/profiles',
-        public_id: `user_${userId}_${Date.now()}`,
-        resource_type: 'image',
-        transformation: [
-          { width: 400, height: 400, crop: 'fill', gravity: 'face' },
-          { quality: 'auto', fetch_format: 'auto' }
-        ] // Optimize for profile images
-      });
-      return result;
-    } catch (error) {
-      console.error('Upload profile image error:', error);
-      throw error;
-    }
-  }
-
-  // Upload service images
-  async uploadServiceImages(files, serviceId) {
-    try {
-      const uploadPromises = files.map((file, index) => 
-        cloudinary.uploader.upload(file.buffer, {
-          folder: 'connectify/services',
-          public_id: `service_${serviceId}_${Date.now()}_${index}`,
-          resource_type: 'image',
-          tags: ['service_image']
-        })
-      );
-      const results = await Promise.all(uploadPromises);
-      return results;
-    } catch (error) {
-      console.error('Upload service images error:', error);
-      throw error;
-    }
-  }
-
-  // Upload verification documents
-  async uploadVerificationDocuments(files, userId) {
-    try {
-      const uploadPromises = files.map((file, index) => 
-        cloudinary.uploader.upload(file.buffer, {
-          folder: 'connectify/verification',
-          public_id: `verification_${userId}_${Date.now()}_${index}`,
-          resource_type: 'auto',
-          tags: ['verification_document']
-        })
-      );
-      const results = await Promise.all(uploadPromises);
-      return results;
-    } catch (error) {
-      console.error('Upload verification documents error:', error);
-      throw error;
-    }
-  }
-
-  // Optimize image for specific use case
-  getOptimizedImageUrl(publicId, width = 800, height = 600, quality = 'auto') {
-    return cloudinary.url(publicId, {
-      type: 'upload',
-      secure: true,
-      transformation: [
-        { width: width, height: height, crop: 'fill' },
-        { quality: quality, fetch_format: 'auto' }
-      ]
+    return this.uploadFile(fileBuffer, 'connectify/users/profiles', {
+      public_id: `user_${userId}_${Date.now()}`,
+      mimetype: 'image/jpeg',
+      contentType: 'image/jpeg',
+      upsert: true
     });
   }
 
-  // Check if cloudinary is configured
-  isConfigured() {
-    return process.env.CLOUDINARY_CLOUD_NAME && 
-           process.env.CLOUDINARY_API_KEY && 
-           process.env.CLOUDINARY_API_SECRET;
+  async uploadServiceImages(files, serviceId) {
+    return this.uploadMultipleFiles(files, 'connectify/services', {
+      public_id: `service_${serviceId}_${Date.now()}`
+    });
+  }
+
+  async uploadVerificationDocuments(files, userId) {
+    return this.uploadMultipleFiles(files, 'connectify/verification', {
+      public_id: `verification_${userId}_${Date.now()}`
+    });
+  }
+
+  getOptimizedImageUrl(publicId, width = 800, height = 600) {
+    return this.getUrl(publicId);
   }
 }
 
-module.exports = new CloudStorageService();
+module.exports = new SupabaseStorageService();

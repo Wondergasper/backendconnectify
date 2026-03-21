@@ -26,37 +26,8 @@ const { auth } = require('../middleware/auth');  // Fixed: was 'authenticate', s
 router.post('/', auth, notifyController.sendNotification);
 
 /**
- * @route   GET /api/notify/user/:userId
- * @desc    Get user notifications
- * @access  Private
- * @query   limit (default: 50), unreadOnly (default: false)
- */
-router.get('/user/:userId', auth, notifyController.getUserNotifications);
-
-/**
- * @route   PUT /api/notify/:notificationId/read
- * @desc    Mark notification as read
- * @access  Private
- */
-router.put('/:notificationId/read', auth, notifyController.markAsRead);
-
-/**
- * @route   PUT /api/notify/user/:userId/read-all
- * @desc    Mark all user notifications as read
- * @access  Private
- */
-router.put('/user/:userId/read-all', auth, notifyController.markAllAsRead);
-
-/**
- * @route   DELETE /api/notify/:notificationId
- * @desc    Delete notification
- * @access  Private
- */
-router.delete('/:notificationId', auth, notifyController.deleteNotification);
-
-/**
  * @route   POST /api/notify/otp
- * @desc    Send OTP via SMS
+ * @desc    Send OTP via email
  * @access  Private
  * @body    { phone: string, otp: string, expiryMinutes: number }
  */

@@ -203,8 +203,8 @@ exports.unbookSlot = async (req, res) => {
       return res.status(404).json({ error: 'Availability not found for this date' });
     }
 
-    const slotIndex = availability.slots.findIndex(slot => 
-      slot.startTime === startTime && slot.bookingId.toString() === bookingId
+    const slotIndex = availability.slots.findIndex(slot =>
+      slot.startTime === startTime && slot.bookingId && slot.bookingId.toString() === bookingId
     );
     
     if (slotIndex === -1) {

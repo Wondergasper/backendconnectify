@@ -180,7 +180,7 @@ class NotificationController {
         try {
             const { notificationId } = req.params;
 
-            await inappService.markAsRead(notificationId);
+            await inappService.markAsRead(notificationId, req.user?._id);
 
             res.status(200).json({
                 success: true,
@@ -204,7 +204,7 @@ class NotificationController {
         try {
             const { userId } = req.params;
 
-            await inappService.markAllAsRead(userId);
+            await inappService.markAllAsRead(req.user?._id || userId);
 
             res.status(200).json({
                 success: true,
@@ -228,7 +228,7 @@ class NotificationController {
         try {
             const { notificationId } = req.params;
 
-            await inappService.deleteNotification(notificationId);
+            await inappService.deleteNotification(notificationId, req.user?._id);
 
             res.status(200).json({
                 success: true,
@@ -335,6 +335,7 @@ class NotificationController {
             // In-app notification
             if (channels.includes('inapp') && userId) {
                 try {
+                    const bookingId = bookingDetails?.id || bookingDetails?._id;
                     const statusMessages = {
                         confirmed: 'Your booking has been confirmed',
                         cancelled: 'Your booking has been cancelled',
@@ -346,7 +347,7 @@ class NotificationController {
                         title: 'Booking Update',
                         body: statusMessages[status] || `Booking status: ${status}`,
                         fcmToken,
-                        data: { type: 'booking', status, bookingId: bookingDetails.id }
+                        data: { type: 'booking', status, bookingId }
                     });
                 } catch (error) {
                     errors.push({ channel: 'inapp', error: error.message });
