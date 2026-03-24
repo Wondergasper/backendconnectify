@@ -2,8 +2,18 @@ const express = require('express');
 const { body } = require('express-validator');
 const { register, login, getProfile, updateProfile, refreshToken, logout, forgotPassword, resetPassword } = require('../controllers/authController');
 const { auth } = require('../middleware/auth');
+const rateLimit = require('express-rate-limit');
 
 const router = express.Router();
+
+// Rate limiter for refresh endpoint (prevent token brute force)
+const refreshRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // Limit each IP to 10 refresh attempts per window
+  message: { error: 'Too many token refresh attempts, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 // @route   POST api/auth/register
 // @desc    Register user
@@ -40,7 +50,15 @@ router.post('/login', [
 // @route   POST api/auth/refresh
 // @desc    Refresh access token
 // @access  Public (uses refresh token from cookies)
-router.post('/refresh', refreshToken);
+router.post('/refresh', refreshRateLimit, [
+  body().custom((value, { req }) => {
+    // Validate that cookies are present
+    if (!req.cookies || !req.cookies.refreshToken) {
+      throw new Error('Refresh token is required');
+    }
+    return true;
+  }),
+], refreshToken);
 
 // @route   POST api/auth/logout
 // @desc    Logout user

@@ -434,9 +434,10 @@ exports.forgotPassword = async (req, res) => {
       const emailService = require('../services/emailService');
       await emailService.sendPasswordReset(email, resetToken, user.name);
 
-      // Development-only logging (NEVER log tokens in production)
-      if (process.env.NODE_ENV === 'development') {
-        console.log('Reset Password URL:', resetUrl);
+      // Development-only: Log reset URL for testing (remove in production)
+      // SECURITY: Never log tokens in production environments
+      if (process.env.NODE_ENV === 'development' && process.env.LOG_PASSWORD_RESET_URL === 'true') {
+        console.log('Reset Password URL (for testing only):', resetUrl);
       }
 
       res.status(200).json({ success: true, data: 'Email sent' });

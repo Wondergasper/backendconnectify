@@ -89,6 +89,8 @@ const auth = async (req, res, next) => {
         await user.save();
 
         // Update both cookies with new tokens
+        // Use res.setHeader instead of res.cookie to avoid duplicate calls
+        // when frontend also handles 401 refresh
         res.cookie('accessToken', newAccessToken, {
           httpOnly: true,
           secure: process.env.NODE_ENV === 'production',
@@ -107,6 +109,9 @@ const auth = async (req, res, next) => {
         req.user = user;
         next();
       } catch (refreshError) {
+        // Clear invalid tokens from cookies
+        res.clearCookie('accessToken');
+        res.clearCookie('refreshToken');
         return res.status(403).json({ error: 'Both tokens are invalid' });
       }
     }
