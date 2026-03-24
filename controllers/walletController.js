@@ -1,23 +1,33 @@
+// controllers/walletController.js
 const WalletTransaction = require('../models/WalletTransaction');
 const User = require('../models/User');
 const Booking = require('../models/Booking');
 const mongoose = require('mongoose');
 const emailService = require('../services/emailService');
+const paystackService = require('../services/paystackService');
 const { validationResult } = require('express-validator');
+const crypto = require('crypto');
 
-// Get user wallet balance
+// ─── Helper ─────────────────────────────────────────────────────────────────
+
+const generateReference = (prefix = 'TXN') => {
+  const timestamp = Date.now();
+  const random = crypto.randomBytes(4).toString('hex').toUpperCase();
+  return `${prefix}_${timestamp}_${random}`;
+};
+
+// ─── GET /api/wallet/balance ─────────────────────────────────────────────────
+
 exports.getWalletBalance = async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
-
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
+    if (!user) return res.status(404).json({ error: 'User not found' });
 
     res.json({
       success: true,
       balance: user.wallet.balance,
-      currency: user.wallet.currency
+      currency: user.wallet.currency || 'NGN',
+      availableBalance: user.wallet.balance,
     });
   } catch (error) {
     console.error('Get wallet balance error:', error);
@@ -25,22 +35,29 @@ exports.getWalletBalance = async (req, res) => {
   }
 };
 
-// Get wallet transaction history
+// ─── GET /api/wallet/transactions ────────────────────────────────────────────
+
 exports.getTransactionHistory = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array(), error: 'Validation failed' });
+    }
+
+    const page  = parseInt(req.query.page)  || 1;
     const limit = parseInt(req.query.limit) || 10;
-    const type = req.query.type; // 'credit' or 'debit'
+    const type  = req.query.type; // 'credit' | 'debit'
 
     const query = { user: req.user._id };
     if (type) query.type = type;
 
-    const transactions = await WalletTransaction.find(query)
-      .sort({ createdAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
-
-    const total = await WalletTransaction.countDocuments(query);
+    const [transactions, total] = await Promise.all([
+      WalletTransaction.find(query)
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit),
+      WalletTransaction.countDocuments(query),
+    ]);
 
     res.json({
       success: true,
@@ -49,8 +66,8 @@ exports.getTransactionHistory = async (req, res) => {
         page,
         limit,
         total,
-        pages: Math.ceil(total / limit)
-      }
+        pages: Math.ceil(total / limit),
+      },
     });
   } catch (error) {
     console.error('Get transaction history error:', error);
@@ -58,242 +75,493 @@ exports.getTransactionHistory = async (req, res) => {
   }
 };
 
-// Process payment for booking
+// ─── POST /api/wallet/initialize-payment ─────────────────────────────────────
+// Step 1 of "Add Funds": generate Paystack checkout URL
+
+exports.initializePayment = async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array(), error: 'Validation failed' });
+    }
+
+    if (!paystackService.isConfigured()) {
+      return res.status(503).json({ error: 'Payment service is not configured' });
+    }
+
+    const amount = parseFloat(req.body.amount);
+    if (isNaN(amount) || amount < 100) {
+      return res.status(400).json({ error: 'Minimum amount is ₦100' });
+    }
+    if (amount > 10_000_000) {
+      return res.status(400).json({ error: 'Maximum amount is ₦10,000,000' });
+    }
+
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const reference = generateReference('DEP');
+
+    const paystackData = await paystackService.initializeTransaction(
+      user.email,
+      amount,
+      reference,
+      { userId: String(user._id), purpose: 'wallet_topup' }
+    );
+
+    if (!paystackData.status) {
+      return res.status(400).json({ error: paystackData.message || 'Failed to initialize payment' });
+    }
+
+    // Create a pending transaction record immediately so we can match it on verification
+    await WalletTransaction.create({
+      user: user._id,
+      type: 'credit',
+      amount,
+      currency: 'NGN',
+      description: 'Wallet top-up via Paystack',
+      reference,
+      status: 'pending',
+      metadata: { paymentMethod: 'paystack' },
+    });
+
+    res.json({
+      success: true,
+      data: {
+        authorizationUrl: paystackData.data.authorization_url,
+        accessCode: paystackData.data.access_code,
+        reference,
+        amount,
+      },
+    });
+  } catch (error) {
+    console.error('Initialize payment error:', error);
+    res.status(500).json({ error: error.message || 'Server error' });
+  }
+};
+
+// ─── POST /api/wallet/verify-payment ─────────────────────────────────────────
+// Step 2 of "Add Funds": called after Paystack redirects back
+
+exports.verifyPayment = async (req, res) => {
+  try {
+    const { reference } = req.body;
+    if (!reference) {
+      return res.status(400).json({ error: 'Transaction reference is required' });
+    }
+
+    if (!paystackService.isConfigured()) {
+      return res.status(503).json({ error: 'Payment service is not configured' });
+    }
+
+    // Prevent double-processing by checking existing record
+    const existingTx = await WalletTransaction.findOne({ reference });
+    if (!existingTx) {
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+    if (existingTx.status === 'completed') {
+      return res.json({
+        success: true,
+        message: 'Payment already verified and credited',
+        data: { balance: (await User.findById(req.user._id)).wallet.balance },
+      });
+    }
+    // Ownership check
+    if (String(existingTx.user) !== String(req.user._id)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    // Verify with Paystack
+    const paystackData = await paystackService.verifyTransaction(reference);
+
+    if (!paystackData.status || paystackData.data.status !== 'success') {
+      await WalletTransaction.findByIdAndUpdate(existingTx._id, { status: 'failed' });
+      return res.status(400).json({
+        error: 'Payment verification failed',
+        paystackStatus: paystackData.data?.status,
+      });
+    }
+
+    const verifiedAmountNaira = paystackData.data.amount / 100; // convert kobo → naira
+
+    // Atomic update: credit wallet + mark transaction completed
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      const user = await User.findById(req.user._id).session(session);
+      if (!user) throw new Error('User not found');
+
+      const previousBalance = user.wallet.balance;
+      user.wallet.balance += verifiedAmountNaira;
+      await user.save({ session });
+
+      await WalletTransaction.findByIdAndUpdate(
+        existingTx._id,
+        { status: 'completed', amount: verifiedAmountNaira },
+        { session }
+      );
+
+      await session.commitTransaction();
+
+      // Send confirmation email (async, non-blocking)
+      emailService.sendFundsAddedConfirmation(
+        { amount: verifiedAmountNaira, reference, previousBalance, newBalance: user.wallet.balance },
+        user.email,
+        user.name
+      ).catch(err => console.error('Funds added email error:', err));
+
+      res.json({
+        success: true,
+        message: 'Payment verified and wallet credited',
+        data: { balance: user.wallet.balance, currency: 'NGN', amountAdded: verifiedAmountNaira },
+      });
+    } catch (err) {
+      await session.abortTransaction();
+      throw err;
+    } finally {
+      session.endSession();
+    }
+  } catch (error) {
+    console.error('Verify payment error:', error);
+    res.status(500).json({ error: error.message || 'Server error' });
+  }
+};
+
+// ─── POST /api/wallet/add-funds (legacy / manual) ────────────────────────────
+// Kept for backward compat; now delegates to Paystack-backed flow
+
+exports.addFunds = async (req, res) => {
+  // If Paystack is configured, force through the proper flow
+  if (paystackService.isConfigured()) {
+    return res.status(400).json({
+      error: 'Please use /api/wallet/initialize-payment to fund your wallet via Paystack',
+      useEndpoint: '/api/wallet/initialize-payment',
+    });
+  }
+
+  // Fallback — only if Paystack is NOT configured (dev/test mode)
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array(), error: 'Validation failed' });
+    }
+
+    const amount = parseFloat(req.body.amount);
+    if (isNaN(amount) || amount <= 0) {
+      return res.status(400).json({ error: 'Amount must be a positive number' });
+    }
+    if (amount > 10_000_000) {
+      return res.status(400).json({ error: 'Amount exceeds maximum allowed (₦10,000,000)' });
+    }
+
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const previousBalance = user.wallet.balance;
+    user.wallet.balance += amount;
+    await user.save();
+
+    const reference = generateReference('DEP');
+    await WalletTransaction.create({
+      user: req.user._id,
+      type: 'credit',
+      amount,
+      currency: user.wallet.currency || 'NGN',
+      description: 'Added funds to wallet (test mode)',
+      reference,
+      status: 'completed',
+      metadata: { paymentMethod: 'manual' },
+    });
+
+    emailService.sendFundsAddedConfirmation(
+      { amount, reference, previousBalance, newBalance: user.wallet.balance },
+      user.email,
+      user.name
+    ).catch(err => console.error('Funds added email error:', err));
+
+    res.json({
+      success: true,
+      data: { balance: user.wallet.balance, currency: user.wallet.currency || 'NGN' },
+      message: 'Funds added successfully (test mode)',
+    });
+  } catch (error) {
+    console.error('Add funds error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+// ─── POST /api/wallet/withdraw ────────────────────────────────────────────────
+
+exports.withdrawFunds = async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array(), error: 'Validation failed' });
+    }
+
+    if (!paystackService.isConfigured()) {
+      return res.status(503).json({ error: 'Payment service is not configured' });
+    }
+
+    const { amount, accountNumber, bankCode, accountName } = req.body;
+    const withdrawAmount = parseFloat(amount);
+
+    if (isNaN(withdrawAmount) || withdrawAmount < 100) {
+      return res.status(400).json({ error: 'Minimum withdrawal is ₦100' });
+    }
+
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    if (user.wallet.balance < withdrawAmount) {
+      return res.status(400).json({
+        error: 'Insufficient balance',
+        balance: user.wallet.balance,
+        requested: withdrawAmount,
+      });
+    }
+
+    // Create recipient on Paystack
+    const recipientData = await paystackService.createTransferRecipient(
+      accountName,
+      accountNumber,
+      bankCode
+    );
+
+    if (!recipientData.status) {
+      return res.status(400).json({ error: recipientData.message || 'Failed to create transfer recipient' });
+    }
+
+    const recipientCode = recipientData.data.recipient_code;
+    const reference = generateReference('WTH');
+
+    // Debit wallet immediately (retry/refund on transfer failure)
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      user.wallet.balance -= withdrawAmount;
+      await user.save({ session });
+
+      const transaction = await WalletTransaction.create([{
+        user: req.user._id,
+        type: 'debit',
+        amount: withdrawAmount,
+        currency: 'NGN',
+        description: `Withdrawal to ${accountName} (${accountNumber}) at ${bankCode}`,
+        reference,
+        status: 'pending',
+        metadata: {
+          paymentMethod: 'bank_transfer',
+          recipientCode,
+          accountNumber,
+          bankCode,
+          accountName,
+        },
+      }], { session });
+
+      await session.commitTransaction();
+
+      // Initiate transfer via Paystack (after committing so balance is locked)
+      try {
+        const transferData = await paystackService.initiateTransfer(
+          withdrawAmount,
+          recipientCode,
+          reference,
+          `Connectify wallet withdrawal - ${user.name}`
+        );
+
+        if (transferData.status) {
+          await WalletTransaction.findByIdAndUpdate(transaction[0]._id, {
+            status: transferData.data?.status === 'success' ? 'completed' : 'pending',
+          });
+        }
+
+        res.json({
+          success: true,
+          message: 'Withdrawal initiated. Funds will be transferred to your bank account.',
+          data: {
+            reference,
+            amount: withdrawAmount,
+            accountNumber,
+            accountName,
+            newBalance: user.wallet.balance,
+            transferStatus: transferData.data?.status || 'pending',
+          },
+        });
+      } catch (transferError) {
+        // Paystack transfer failed — refund the wallet balance
+        console.error('Paystack transfer failed, refunding:', transferError);
+        await User.findByIdAndUpdate(req.user._id, { $inc: { 'wallet.balance': withdrawAmount } });
+        await WalletTransaction.findByIdAndUpdate(transaction[0]._id, { status: 'failed' });
+
+        throw new Error('Transfer initiation failed. Your balance has been refunded.');
+      }
+    } catch (err) {
+      await session.abortTransaction();
+      throw err;
+    } finally {
+      session.endSession();
+    }
+  } catch (error) {
+    console.error('Withdraw funds error:', error);
+    res.status(500).json({ error: error.message || 'Server error' });
+  }
+};
+
+// ─── GET /api/wallet/banks ─────────────────────────────────────────────────────
+
+exports.listBanks = async (req, res) => {
+  try {
+    if (!paystackService.isConfigured()) {
+      return res.status(503).json({ error: 'Payment service is not configured' });
+    }
+
+    const data = await paystackService.listBanks();
+
+    res.json({
+      success: true,
+      data: data.data || [],
+    });
+  } catch (error) {
+    console.error('List banks error:', error);
+    res.status(500).json({ error: error.message || 'Server error' });
+  }
+};
+
+// ─── POST /api/wallet/resolve-account ─────────────────────────────────────────
+
+exports.resolveAccount = async (req, res) => {
+  try {
+    const { accountNumber, bankCode } = req.body;
+    if (!accountNumber || !bankCode) {
+      return res.status(400).json({ error: 'accountNumber and bankCode are required' });
+    }
+
+    if (!paystackService.isConfigured()) {
+      return res.status(503).json({ error: 'Payment service is not configured' });
+    }
+
+    const data = await paystackService.resolveAccount(accountNumber, bankCode);
+
+    if (!data.status) {
+      return res.status(400).json({ error: data.message || 'Could not resolve account' });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        accountName: data.data.account_name,
+        accountNumber: data.data.account_number,
+        bankId: data.data.bank_id,
+      },
+    });
+  } catch (error) {
+    console.error('Resolve account error:', error);
+    // Paystack returns 422 with descriptive message when account not found
+    const status = error.response?.status === 422 ? 422 : 500;
+    const message = error.response?.data?.message || error.message || 'Server error';
+    res.status(status).json({ error: message });
+  }
+};
+
+// ─── POST /api/wallet/process-payment ────────────────────────────────────────
+// (booking payment from wallet balance — unchanged logic but cleaned up)
+
 exports.processBookingPayment = async (req, res) => {
   try {
-    // Check for validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array(), error: 'Validation failed' });
     }
 
     const { bookingId } = req.body;
-
     const booking = await Booking.findById(bookingId).populate('service');
-    if (!booking) {
-      return res.status(404).json({ error: 'Booking not found' });
-    }
+    if (!booking) return res.status(404).json({ error: 'Booking not found' });
 
-    // Check if booking belongs to user
-    if (booking.customer.toString() !== req.user._id.toString()) {
+    if (String(booking.customer) !== String(req.user._id)) {
       return res.status(403).json({ error: 'Access denied' });
     }
-
-    // Check if payment already processed
     if (booking.paymentStatus !== 'pending') {
       return res.status(400).json({ error: 'Payment already processed' });
     }
 
-    // Check if user has enough balance
     const user = await User.findById(req.user._id);
     if (user.wallet.balance < booking.totalAmount) {
-      return res.status(400).json({ error: 'Insufficient balance' });
+      return res.status(400).json({
+        error: 'Insufficient balance',
+        balance: user.wallet.balance,
+        required: booking.totalAmount,
+      });
     }
 
-    // Store previous balances for email
-    const customerPreviousBalance = user.wallet.balance;
-
-    // Process the payment
     const session = await mongoose.startSession();
     session.startTransaction();
 
     try {
-      // Update user's wallet balance (debit)
+      const previousCustomerBalance = user.wallet.balance;
       user.wallet.balance -= booking.totalAmount;
-      user.wallet.transactions.push({
-        type: 'debit',
-        amount: booking.totalAmount,
-        description: `Payment for ${booking.service.name} service`
-      });
       await user.save({ session });
 
-      // Create wallet transaction record
-      const transactionReference = `TXN_${Date.now()}_${booking._id}`;
-      const transaction = new WalletTransaction({
+      const customerReference = generateReference('PAY');
+      await WalletTransaction.create([{
         user: req.user._id,
         type: 'debit',
         amount: booking.totalAmount,
-        currency: booking.currency,
-        description: `Payment for ${booking.service.name} service (Booking ID: ${booking._id})`,
-        reference: transactionReference,
+        currency: booking.currency || 'NGN',
+        description: `Payment for ${booking.service.name} (Booking #${booking._id})`,
+        reference: customerReference,
         status: 'completed',
-        metadata: {
-          bookingId: booking._id,
-          providerId: booking.provider
-        }
-      });
-      await transaction.save({ session });
+        metadata: { bookingId: booking._id, providerId: booking.provider },
+      }], { session });
 
-      // Transfer funds to provider (this is simplified - in a real app, you might want to hold funds temporarily)
-      const provider = await User.findById(booking.provider);
-      const providerPreviousBalance = provider.wallet.balance;
-
+      const provider = await User.findById(booking.provider).session(session);
+      const previousProviderBalance = provider.wallet.balance;
       provider.wallet.balance += booking.totalAmount;
-      provider.wallet.transactions.push({
-        type: 'credit',
-        amount: booking.totalAmount,
-        description: `Payment received for ${booking.service.name} service`
-      });
       await provider.save({ session });
 
-      // Create provider transaction record
-      const providerTransactionReference = `TXN_${Date.now()}_${booking.provider}`;
-      const providerTransaction = new WalletTransaction({
+      const providerReference = generateReference('RECV');
+      await WalletTransaction.create([{
         user: booking.provider,
         type: 'credit',
         amount: booking.totalAmount,
-        currency: booking.currency,
-        description: `Payment received for ${booking.service.name} service (Booking ID: ${booking._id})`,
-        reference: providerTransactionReference,
+        currency: booking.currency || 'NGN',
+        description: `Payment received for ${booking.service.name} (Booking #${booking._id})`,
+        reference: providerReference,
         status: 'completed',
-        metadata: {
-          bookingId: booking._id,
-          providerId: booking.provider
-        }
-      });
-      await providerTransaction.save({ session });
+        metadata: { bookingId: booking._id, providerId: booking.provider },
+      }], { session });
 
-      // Update booking payment status
       booking.paymentStatus = 'paid';
       await booking.save({ session });
 
       await session.commitTransaction();
 
-      // Send payment receipt emails (async, don't wait)
-      try {
-        // Send receipt to customer
-        const customerPaymentData = {
-          amount: booking.totalAmount,
-          reference: transactionReference,
-          serviceName: booking.service.name,
-          providerName: provider.name,
-          bookingId: booking._id.toString(),
-          previousBalance: customerPreviousBalance,
-          newBalance: user.wallet.balance
-        };
+      // Async emails
+      emailService.sendPaymentReceipt(
+        { amount: booking.totalAmount, reference: customerReference, serviceName: booking.service.name,
+          providerName: provider.name, bookingId: String(booking._id),
+          previousBalance: previousCustomerBalance, newBalance: user.wallet.balance },
+        user.email, user.name
+      ).catch(err => console.error('Customer payment email error:', err));
 
-        emailService.sendPaymentReceipt(
-          customerPaymentData,
-          user.email,
-          user.name
-        ).catch(err => console.error('Failed to send payment receipt to customer:', err));
+      emailService.sendPaymentReceived(
+        { amount: booking.totalAmount, reference: providerReference, serviceName: booking.service.name,
+          customerName: user.name, bookingId: String(booking._id),
+          previousBalance: previousProviderBalance, newBalance: provider.wallet.balance },
+        provider.email, provider.name
+      ).catch(err => console.error('Provider payment email error:', err));
 
-        // Send payment received notification to provider
-        const providerPaymentData = {
-          amount: booking.totalAmount,
-          reference: providerTransactionReference,
-          serviceName: booking.service.name,
-          customerName: user.name,
-          bookingId: booking._id.toString(),
-          previousBalance: providerPreviousBalance,
-          newBalance: provider.wallet.balance
-        };
-
-        emailService.sendPaymentReceived(
-          providerPaymentData,
-          provider.email,
-          provider.name
-        ).catch(err => console.error('Failed to send payment received email to provider:', err));
-
-      } catch (emailError) {
-        console.error('Email notification error:', emailError);
-        // Don't fail the payment if email fails
-      }
-
-      res.json({
-        success: true,
-        message: 'Payment processed successfully',
-        booking
-      });
-    } catch (error) {
+      res.json({ success: true, message: 'Payment processed successfully', booking });
+    } catch (err) {
       await session.abortTransaction();
-      throw error;
+      throw err;
     } finally {
       session.endSession();
     }
   } catch (error) {
     console.error('Process booking payment error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-};
-
-// Add funds to wallet (simplified - in real app, integrate with payment provider)
-exports.addFunds = async (req, res) => {
-  try {
-    // Check for validation errors
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array(), error: 'Validation failed' });
-    }
-
-    // Parse and sanitize amount
-    const amount = parseFloat(req.body.amount);
-
-    if (isNaN(amount) || amount <= 0) {
-      return res.status(400).json({ error: 'Amount must be a positive number' });
-    }
-
-    // Additional security: prevent extremely large amounts
-    if (amount > 10000000) {
-      return res.status(400).json({ error: 'Amount exceeds maximum allowed (₦10,000,000)' });
-    }
-
-    const user = await User.findById(req.user._id);
-    const previousBalance = user.wallet.balance;
-
-    // In a real app, you would process actual payment here
-    // For now, just adding funds (simulated)
-    user.wallet.balance += amount;
-    user.wallet.transactions.push({
-      type: 'credit',
-      amount,
-      description: 'Added funds to wallet'
-    });
-    await user.save();
-
-    // Create transaction record
-    const transactionReference = `DEP_${Date.now()}_${req.user._id}`;
-    const transaction = new WalletTransaction({
-      user: req.user._id,
-      type: 'credit',
-      amount,
-      currency: user.wallet.currency,
-      description: 'Added funds to wallet',
-      reference: transactionReference,
-      status: 'completed'
-    });
-    await transaction.save();
-
-    // Send funds added confirmation email (async, don't wait)
-    try {
-      const paymentData = {
-        amount: amount,
-        reference: transactionReference,
-        previousBalance: previousBalance,
-        newBalance: user.wallet.balance
-      };
-
-      emailService.sendFundsAddedConfirmation(
-        paymentData,
-        user.email,
-        user.name
-      ).catch(err => console.error('Failed to send funds added confirmation email:', err));
-
-    } catch (emailError) {
-      console.error('Email notification error:', emailError);
-      // Don't fail the transaction if email fails
-    }
-
-    res.json({
-      success: true,
-      data: {
-        balance: user.wallet.balance,
-        currency: user.wallet.currency
-      },
-      message: 'Funds added successfully'
-    });
-  } catch (error) {
-    console.error('Add funds error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 };

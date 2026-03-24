@@ -1,52 +1,33 @@
 // routes/notify.js
+// ⚠️  INTERNAL USE ONLY — these routes trigger real emails/SMS/push notifications.
+//     All routes require admin role to prevent abuse.
 const express = require('express');
 const router = express.Router();
 const notifyController = require('../controllers/notifyController');
-const { auth } = require('../middleware/auth');  // Fixed: was 'authenticate', should be 'auth'
+const { auth, checkRole } = require('../middleware/auth');
+
+// All notify routes are restricted to admin role
+const adminOnly = [auth, checkRole(['admin'])];
 
 /**
  * @route   POST /api/notify
- * @desc    Send multi-channel notification
- * @access  Private
- * @body    {
- *   email: string,
- *   phone: string,
- *   userId: string,
- *   fcmToken: string,
- *   title: string,
- *   message: string,
- *   subject: string,
- *   html: string,
- *   channels: ['email', 'sms', 'inapp'],
- *   template: string,
- *   templateData: object,
- *   data: object
- * }
+ * @desc    Send multi-channel notification (email, SMS, in-app, push)
+ * @access  Private — Admin only
  */
-router.post('/', auth, notifyController.sendNotification);
+router.post('/', ...adminOnly, notifyController.sendNotification);
 
 /**
  * @route   POST /api/notify/otp
  * @desc    Send OTP via email
- * @access  Private
- * @body    { phone: string, otp: string, expiryMinutes: number }
+ * @access  Private — Admin only
  */
-router.post('/otp', auth, notifyController.sendOTP);
+router.post('/otp', ...adminOnly, notifyController.sendOTP);
 
 /**
  * @route   POST /api/notify/booking
- * @desc    Send booking notification
- * @access  Private
- * @body    {
- *   email: string,
- *   phone: string,
- *   userId: string,
- *   fcmToken: string,
- *   bookingDetails: object,
- *   status: string,
- *   channels: ['email', 'sms', 'inapp']
- * }
+ * @desc    Send booking-specific notification
+ * @access  Private — Admin only
  */
-router.post('/booking', auth, notifyController.sendBookingNotification);
+router.post('/booking', ...adminOnly, notifyController.sendBookingNotification);
 
 module.exports = router;
