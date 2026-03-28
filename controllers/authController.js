@@ -324,10 +324,20 @@ exports.updateProfile = async (req, res) => {
     if (name) updateData.name = name;
     if (phone) updateData.phone = phone;
     if (role !== undefined) {
-      if (req.user?.role !== 'admin') {
-        return res.status(403).json({ error: 'Only admins can change user roles' });
-      }
-      if (['customer', 'provider', 'admin'].includes(role)) {
+      const adminAssignableRoles = ['customer', 'provider', 'admin'];
+      const selfAssignableRoles = ['customer', 'provider'];
+
+      if (req.user?.role === 'admin') {
+        if (!adminAssignableRoles.includes(role)) {
+          return res.status(400).json({ error: 'Invalid role' });
+        }
+
+        updateData.role = role;
+      } else {
+        if (!selfAssignableRoles.includes(role)) {
+          return res.status(403).json({ error: 'You can only switch between customer and provider roles' });
+        }
+
         updateData.role = role;
       }
     }
