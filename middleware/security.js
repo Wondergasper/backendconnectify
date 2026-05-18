@@ -120,6 +120,40 @@ const mongoSanitization = mongoSanitize({
 // HTTP Parameter Pollution protection
 const hppProtection = hpp();
 
+const sameOriginGuard = (allowedOrigins = []) => {
+  const allowed = new Set(allowedOrigins.filter(Boolean));
+  const unsafeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+  return (req, res, next) => {
+    if (!unsafeMethods.has(req.method) || req.method === 'OPTIONS') {
+      return next();
+    }
+
+    const hasCookieAuth = Boolean(req.cookies?.accessToken || req.cookies?.refreshToken);
+    if (!hasCookieAuth) {
+      return next();
+    }
+
+    const source = req.get('origin') || req.get('referer');
+    if (!source) {
+      return res.status(403).json({ error: 'Cross-site request blocked' });
+    }
+
+    let sourceOrigin;
+    try {
+      sourceOrigin = new URL(source).origin;
+    } catch (error) {
+      return res.status(403).json({ error: 'Invalid request origin' });
+    }
+
+    if (!allowed.has(sourceOrigin)) {
+      return res.status(403).json({ error: 'Cross-site request blocked' });
+    }
+
+    next();
+  };
+};
+
 // Security logging middleware
 const securityLogging = (req, res, next) => {
   // Log potential security issues
@@ -153,6 +187,7 @@ module.exports = {
   globalRateLimiter,
   authRateLimiter,
   searchRateLimiter,
+  sameOriginGuard,
   xssProtection,
   mongoSanitization,
   hppProtection,

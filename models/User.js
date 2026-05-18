@@ -123,7 +123,8 @@ const userSchema = new mongoose.Schema({
     default: true
   },
   refreshToken: {
-    type: String
+    type: String,
+    select: false // Never return the stored hash in standard queries
   },
   resetPasswordToken: String,
   resetPasswordExpire: Date,

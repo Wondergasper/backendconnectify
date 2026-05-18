@@ -5,6 +5,7 @@ const cors = require('cors');
 const mongoose = require('mongoose');
 const cookieParser = require('cookie-parser'); // Add cookie parser
 const rateLimit = require('express-rate-limit');
+const jwt = require('jsonwebtoken');
 require('dotenv').config();
 
 // Add morgan for logging HTTP requests
@@ -111,7 +112,8 @@ app.use(cors({
     'Authorization',
     'X-Requested-With',
     'Accept',
-    'Origin'
+    'Origin',
+    'X-Client-Type'
   ],
   exposedHeaders: ['set-cookie'],
   optionsSuccessStatus: 204,
@@ -122,6 +124,7 @@ app.use(cors({
 // Security middleware - CRITICAL: Protect against common attacks
 const {
   securityHeaders,
+  sameOriginGuard,
   xssProtection,
   mongoSanitization,
   hppProtection
@@ -136,6 +139,7 @@ app.use(hppProtection);        // HTTP Parameter Pollution prevention
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser()); // Add cookie parser middleware
+app.use(sameOriginGuard(corsOrigin));
 
 // Rate limiting configuration
 const globalRateLimit = rateLimit({
@@ -200,13 +204,11 @@ async function initializeRedis() {
   }
 }
 
-// Socket.IO middleware for authentication using the same token as HTTP auth
-const jwt = require('jsonwebtoken');
+// Helper: parse raw Cookie header string into a plain object
 const parseCookieHeader = (cookieHeader = '') => {
   return cookieHeader.split(';').reduce((acc, part) => {
     const [rawKey, ...rawValue] = part.split('=');
     if (!rawKey || rawValue.length === 0) return acc;
-
     const key = rawKey.trim();
     const value = rawValue.join('=').trim();
     acc[key] = decodeURIComponent(value);
@@ -214,24 +216,78 @@ const parseCookieHeader = (cookieHeader = '') => {
   }, {});
 };
 
-io.use((socket, next) => {
+// Socket.IO middleware for authentication — supports access token + refresh token
+// fallback so connections survive beyond the 15-minute access token lifespan.
+io.use(async (socket, next) => {
   try {
     const cookies = parseCookieHeader(socket.handshake.headers.cookie || '');
-    const token =
+    const accessToken =
       socket.handshake.auth?.token ||
       cookies.accessToken ||
       socket.handshake.headers.authorization?.replace('Bearer ', '');
 
-    if (!token) {
-      return next(new Error('Authentication error: No token provided'));
+    const refreshToken = cookies.refreshToken;
+
+    if (!accessToken && !refreshToken) {
+      return next(new Error('Authentication error: No tokens provided'));
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    socket.userId = decoded.userId;
-    socket.userRole = decoded.role;
-    next();
+    const User = mongoose.model('User');
+
+    // 1. Try access token first
+    if (accessToken) {
+      try {
+        const decoded = jwt.verify(accessToken, process.env.JWT_SECRET);
+        
+        // Look up user to get their actual role since it's not encoded in the token
+        const user = await User.findById(decoded.userId).select('role isActive');
+        
+        if (user && user.isActive !== false) {
+          socket.userId = decoded.userId;
+          socket.userRole = user.role;
+          return next();
+        }
+        // If user not found or inactive, fall through to refresh token or fail
+      } catch (accessErr) {
+        // Access token expired or invalid, continue to refresh token check
+        if (!refreshToken) {
+          return next(new Error('Authentication error: Access token expired and no refresh token available'));
+        }
+      }
+    }
+
+    // 2. Fall back to refresh token if access token failed or was missing
+    if (refreshToken) {
+      try {
+        const refreshDecoded = jwt.verify(refreshToken, process.env.JWT_SECRET);
+        
+        // Critical: Must fetch user to get role AND verify refresh token hash against DB 
+        // to prevent disconnected/logged-out users from reconnecting
+        const user = await User.findById(refreshDecoded.userId).select('+refreshToken role isActive');
+        
+        if (!user || user.isActive === false || !user.refreshToken) {
+          throw new Error('User/Token invalid');
+        }
+
+        const { hashRefreshToken } = require('./utils/tokenUtils');
+        const refreshTokenHash = hashRefreshToken(refreshToken);
+
+        if (user.refreshToken !== refreshTokenHash) {
+          throw new Error('Invalid refresh token hash');
+        }
+
+        socket.userId = refreshDecoded.userId;
+        socket.userRole = user.role;
+        return next();
+      } catch (refreshErr) {
+        return next(new Error('Authentication error: Invalid or expired refresh token'));
+      }
+    }
+
+    return next(new Error('Authentication error: Authentication failed'));
   } catch (error) {
-    next(new Error('Authentication error: Invalid token'));
+    console.error('Socket.IO auth middleware error:', error);
+    next(new Error('Authentication error: Internal server error'));
   }
 });
 
@@ -282,8 +338,13 @@ const uploadRoutes = require('./routes/upload');
 const locationRoutes = require('./routes/location');
 const notifyRoutes = require('./routes/notify');
 
+const analyticsRoutes = require('./routes/analytics');
+const adminAuthRoutes = require('./routes/adminAuth');
+
 // API routes
-app.use('/api/auth', authRateLimit, authRoutes);  // Apply stricter rate limit to auth endpoints
+app.use('/api/auth', authRateLimit, authRoutes);
+app.use('/api/admin/auth', authRateLimit, adminAuthRoutes);
+app.use('/api/analytics', apiRateLimit, analyticsRoutes);  // Apply stricter rate limit to auth endpoints
 app.use('/api/users', apiRateLimit, userRoutes);
 app.use('/api/services', apiRateLimit, serviceRoutes);
 app.use('/api/bookings', apiRateLimit, bookingRoutes);

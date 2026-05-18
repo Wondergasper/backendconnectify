@@ -1,32 +1,10 @@
-const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { validationResult } = require('express-validator');
 const crypto = require('crypto');
+const jwt = require('jsonwebtoken');
+const { generateAccessToken, generateRefreshToken, hashRefreshToken } = require('../utils/tokenUtils');
 
 // Environment validation is done in server.js on startup
-
-// Generate JWT access token
-const generateAccessToken = (userId) => {
-  return jwt.sign({ userId }, process.env.JWT_SECRET, {
-    expiresIn: '15m' // 15 minutes
-  });
-};
-
-// Generate refresh token
-const generateRefreshToken = (userId) => {
-  // Create a longer-lived token
-  const refreshToken = jwt.sign({ userId }, process.env.JWT_SECRET, {
-    expiresIn: '7d' // 7 days
-  });
-
-  // Also create a random string to store in the database for additional security
-  const refreshTokenHash = crypto
-    .createHash('sha256')
-    .update(refreshToken)
-    .digest('hex');
-
-  return { refreshToken, refreshTokenHash };
-};
 
 // Register user
 exports.register = async (req, res) => {
@@ -40,10 +18,17 @@ exports.register = async (req, res) => {
     const { name, email, phone, password, role } = req.body;
     const safeRole = ['customer', 'provider'].includes(role) ? role : 'customer';
 
-    // Check if user already exists
-    let user = await User.findOne({
-      $or: [{ email }, { phone }]
-    });
+    const searchConditions = [];
+    if (email) searchConditions.push({ email });
+    if (phone) searchConditions.push({ phone });
+
+    let user = null;
+    if (searchConditions.length > 0) {
+      // Check if user already exists
+      user = await User.findOne({
+        $or: searchConditions
+      });
+    }
 
     if (user) {
       // Provide specific error message
@@ -90,18 +75,26 @@ exports.register = async (req, res) => {
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
     });
 
+    const responseData = {
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+        profile: user.profile
+      }
+    };
+
+    // Include tokens in response body for mobile/non-browser clients
+    if (req.header('X-Client-Type') === 'mobile' || req.query.includeTokens === 'true') {
+      responseData.accessToken = accessToken;
+      responseData.refreshToken = refreshToken;
+    }
+
     res.status(201).json({
       success: true,
-      data: {
-        user: {
-          id: user._id,
-          name: user.name,
-          email: user.email,
-          phone: user.phone,
-          role: user.role,
-          profile: user.profile
-        }
-      }
+      data: responseData
     });
   } catch (error) {
     console.error('Registration error:', error);
@@ -125,9 +118,17 @@ exports.login = async (req, res) => {
       console.log('Login attempt with:', { email: email ? '***' : null, phone: phone ? '***' : null });
     }
 
+    const loginConditions = [];
+    if (email) loginConditions.push({ email });
+    if (phone) loginConditions.push({ phone });
+
+    if (loginConditions.length === 0) {
+      return res.status(400).json({ error: 'Email or phone must be provided' });
+    }
+
     // Find user by email or phone
     const user = await User.findOne({
-      $or: [{ email }, { phone }]
+      $or: loginConditions
     }).select('+password'); // Include password in query
 
     if (process.env.NODE_ENV === 'development') {
@@ -165,18 +166,26 @@ exports.login = async (req, res) => {
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
     });
 
+    const responseData = {
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+        profile: user.profile
+      }
+    };
+
+    // Include tokens in response body for mobile/non-browser clients
+    if (req.header('X-Client-Type') === 'mobile' || req.query.includeTokens === 'true') {
+      responseData.accessToken = accessToken;
+      responseData.refreshToken = refreshToken;
+    }
+
     res.json({
       success: true,
-      data: {
-        user: {
-          id: user._id,
-          name: user.name,
-          email: user.email,
-          phone: user.phone,
-          role: user.role,
-          profile: user.profile
-        }
-      }
+      data: responseData
     });
   } catch (error) {
     console.error('Login error:', error);
@@ -228,10 +237,7 @@ exports.refreshToken = async (req, res) => {
     }
 
     // Verify the refresh token hash
-    const refreshTokenHash = crypto
-      .createHash('sha256')
-      .update(refreshToken)
-      .digest('hex');
+    const refreshTokenHash = hashRefreshToken(refreshToken);
 
     if (user.refreshToken !== refreshTokenHash) {
       // Clear the stored refresh token to prevent reuse of stolen tokens
@@ -263,18 +269,26 @@ exports.refreshToken = async (req, res) => {
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
     });
 
+    const responseData = {
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+        profile: user.profile
+      }
+    };
+
+    // Include tokens in response body for mobile/non-browser clients
+    if (req.header('X-Client-Type') === 'mobile' || req.query.includeTokens === 'true') {
+      responseData.accessToken = newAccessToken;
+      responseData.refreshToken = newRefreshToken;
+    }
+
     res.json({
       success: true,
-      data: {
-        user: {
-          id: user._id,
-          name: user.name,
-          email: user.email,
-          phone: user.phone,
-          role: user.role,
-          profile: user.profile
-        }
-      }
+      data: responseData
     });
   } catch (error) {
     console.error('Refresh token error:', error);
@@ -285,23 +299,32 @@ exports.refreshToken = async (req, res) => {
 // Logout user
 exports.logout = async (req, res) => {
   try {
-    // Clear the refresh token from the database
-    if (req.user) {
-      await User.findByIdAndUpdate(req.user._id, { refreshToken: undefined });
+    // 1. Try to clear the refresh token from the database
+    // We try multiple ways to identify the user for maximum reliability
+    let userId = req.user?._id;
+
+    if (!userId && req.cookies.refreshToken) {
+      try {
+        const decoded = jwt.verify(req.cookies.refreshToken, process.env.JWT_SECRET);
+        userId = decoded.userId;
+      } catch (err) {
+        // Refresh token invalid, can't clear from DB by ID but we will still clear cookies
+      }
     }
 
-    // Clear cookies with matching settings
-    res.clearCookie('accessToken', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
-    });
+    if (userId) {
+      await User.findByIdAndUpdate(userId, { $unset: { refreshToken: 1 } });
+    }
 
-    res.clearCookie('refreshToken', {
+    // 2. Always clear cookies with matching settings
+    const cookieOptions = {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
-    });
+    };
+
+    res.clearCookie('accessToken', cookieOptions);
+    res.clearCookie('refreshToken', cookieOptions);
 
     res.json({
       success: true,
@@ -309,6 +332,9 @@ exports.logout = async (req, res) => {
     });
   } catch (error) {
     console.error('Logout error:', error);
+    // Still try to clear cookies even on error
+    res.clearCookie('accessToken');
+    res.clearCookie('refreshToken');
     res.status(500).json({ error: 'Server error during logout' });
   }
 };
@@ -344,46 +370,65 @@ exports.updateProfile = async (req, res) => {
 
     // Handle profile object (preferred structure from onboarding)
     if (profile) {
-      if (profile.bio) updateData['profile.bio'] = profile.bio;
-      if (profile.avatar) updateData['profile.avatar'] = profile.avatar;
-      if (profile.location) {
+      if (profile.bio !== undefined) updateData['profile.bio'] = profile.bio;
+      if (profile.avatar !== undefined) updateData['profile.avatar'] = profile.avatar;
+      if (profile.location !== undefined) {
         // Ensure location is properly structured
         if (typeof profile.location === 'string') {
           // Convert string to proper location object
           updateData['profile.location.address'] = profile.location;
-        } else if (typeof profile.location === 'object') {
+        } else if (typeof profile.location === 'object' && profile.location !== null) {
           // Handle object structure
-          if (profile.location.address) {
+          if (profile.location.address !== undefined) {
             updateData['profile.location.address'] = profile.location.address;
           }
-          if (profile.location.coordinates) {
+          if (profile.location.coordinates !== undefined) {
             updateData['profile.location.coordinates'] = profile.location.coordinates;
           }
         }
       }
-      if (profile.social) updateData['profile.social'] = profile.social;
+      if (profile.social !== undefined) {
+        if (typeof profile.social === 'object' && profile.social !== null) {
+          Object.keys(profile.social).forEach(key => {
+            updateData[`profile.social.${key}`] = profile.social[key];
+          });
+        }
+      }
     }
 
     // Handle legacy flat structure for backward compatibility
-    if (bio && !profile?.bio) updateData['profile.bio'] = bio;
-    if (location && !profile?.location) {
+    if (bio !== undefined && (profile === undefined || profile.bio === undefined)) updateData['profile.bio'] = bio;
+    if (location !== undefined && (profile === undefined || profile.location === undefined)) {
       if (typeof location === 'string') {
         updateData['profile.location.address'] = location;
-      } else if (typeof location === 'object') {
-        if (location.address) {
+      } else if (typeof location === 'object' && location !== null) {
+        if (location.address !== undefined) {
           updateData['profile.location.address'] = location.address;
         }
-        if (location.coordinates) {
+        if (location.coordinates !== undefined) {
           updateData['profile.location.coordinates'] = location.coordinates;
         }
       }
     }
-    if (social && !profile?.social) updateData['profile.social'] = social;
+    if (social !== undefined && (profile === undefined || profile.social === undefined)) {
+      if (typeof social === 'object' && social !== null) {
+        Object.keys(social).forEach(key => {
+          updateData[`profile.social.${key}`] = social[key];
+        });
+      }
+    }
 
-    // Handle provider details
-    if (providerDetails) {
+    // Handle provider details - Use dot notation for nested fields to avoid overwriting the whole object
+    if (providerDetails && typeof providerDetails === 'object') {
       Object.keys(providerDetails).forEach(key => {
-        updateData[`providerDetails.${key}`] = providerDetails[key];
+        if (key === 'availability' && typeof providerDetails.availability === 'object' && providerDetails.availability !== null) {
+          // Handle nested availability separately
+          Object.keys(providerDetails.availability).forEach(day => {
+            updateData[`providerDetails.availability.${day}`] = providerDetails.availability[day];
+          });
+        } else {
+          updateData[`providerDetails.${key}`] = providerDetails[key];
+        }
       });
     }
 
@@ -415,8 +460,13 @@ exports.forgotPassword = async (req, res) => {
     const { email } = req.body;
     const user = await User.findOne({ email });
 
+    // SECURITY: Always return 200 with a generic message — never reveal whether
+    // an account exists (prevents user-enumeration attacks).
     if (!user) {
-      return res.status(404).json({ error: 'There is no user with that email' });
+      return res.status(200).json({
+        success: true,
+        data: 'If that email is registered, a password reset link has been sent.'
+      });
     }
 
     // Generate reset token
@@ -469,6 +519,12 @@ exports.forgotPassword = async (req, res) => {
 // Reset Password
 exports.resetPassword = async (req, res) => {
   try {
+    // Validate new password before touching the database
+    const { password } = req.body;
+    if (!password || typeof password !== 'string' || password.trim().length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
     // Get hashed token
     const resetPasswordToken = crypto
       .createHash('sha256')
@@ -481,13 +537,16 @@ exports.resetPassword = async (req, res) => {
     });
 
     if (!user) {
-      return res.status(400).json({ error: 'Invalid token' });
+      return res.status(400).json({ error: 'Invalid or expired reset token' });
     }
 
     // Set new password
-    user.password = req.body.password;
+    user.password = password.trim();
     user.resetPasswordToken = undefined;
     user.resetPasswordExpire = undefined;
+    
+    // CRITICAL: Invalidate all existing sessions so compromised accounts cannot sustain access
+    user.refreshToken = undefined; 
 
     await user.save();
 

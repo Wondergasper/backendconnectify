@@ -187,13 +187,19 @@ exports.getServiceById = async (req, res) => {
   }
 };
 
-// Update service (provider only)
+// Update service (provider only or admin)
 exports.updateService = async (req, res) => {
   try {
     const { name, category, description, price, priceType, duration, images, location, servicesOffered, isActive } = req.body;
+    const isAdmin = req.user.role === 'admin';
+
+    const query = { _id: req.params.id };
+    if (!isAdmin) {
+      query.provider = req.user._id;
+    }
 
     const service = await Service.findOneAndUpdate(
-      { _id: req.params.id, provider: req.user._id },
+      query,
       {
         $set: {
           name,
@@ -212,7 +218,7 @@ exports.updateService = async (req, res) => {
     );
 
     if (!service) {
-      return res.status(404).json({ error: 'Service not found or you are not the owner' });
+      return res.status(404).json({ error: 'Service not found or you do not have permission' });
     }
 
     // Clear relevant cache entries after updating a service
@@ -230,16 +236,20 @@ exports.updateService = async (req, res) => {
   }
 };
 
-// Delete service (provider only)
+// Delete service (provider only or admin)
 exports.deleteService = async (req, res) => {
   try {
-    const service = await Service.findOneAndDelete({
-      _id: req.params.id,
-      provider: req.user._id
-    });
+    const isAdmin = req.user.role === 'admin';
+    const query = { _id: req.params.id };
+    
+    if (!isAdmin) {
+      query.provider = req.user._id;
+    }
+
+    const service = await Service.findOneAndDelete(query);
 
     if (!service) {
-      return res.status(404).json({ error: 'Service not found or you are not the owner' });
+      return res.status(404).json({ error: 'Service not found or you do not have permission' });
     }
 
     // Clear relevant cache entries after deleting a service

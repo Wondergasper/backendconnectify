@@ -341,8 +341,15 @@ exports.withdrawFunds = async (req, res) => {
     session.startTransaction();
 
     try {
-      user.wallet.balance -= withdrawAmount;
-      await user.save({ session });
+      // CRITICAL: Refetch the user securely inside the active transaction context
+      // to ensure an atomic lock and prevent double-spend race conditions.
+      const txUser = await User.findById(req.user._id).session(session);
+      if (!txUser || txUser.wallet.balance < withdrawAmount) {
+        throw new Error('Insufficient balance or user not found during transaction execution');
+      }
+
+      txUser.wallet.balance -= withdrawAmount;
+      await txUser.save({ session });
 
       const transaction = await WalletTransaction.create([{
         user: req.user._id,
@@ -369,7 +376,7 @@ exports.withdrawFunds = async (req, res) => {
           withdrawAmount,
           recipientCode,
           reference,
-          `Connectify wallet withdrawal - ${user.name}`
+          `Connectify wallet withdrawal - ${txUser.name}`
         );
 
         if (transferData.status) {
@@ -386,7 +393,7 @@ exports.withdrawFunds = async (req, res) => {
             amount: withdrawAmount,
             accountNumber,
             accountName,
-            newBalance: user.wallet.balance,
+            newBalance: txUser.wallet.balance,
             transferStatus: transferData.data?.status || 'pending',
           },
         });
@@ -500,9 +507,16 @@ exports.processBookingPayment = async (req, res) => {
     session.startTransaction();
 
     try {
-      const previousCustomerBalance = user.wallet.balance;
-      user.wallet.balance -= booking.totalAmount;
-      await user.save({ session });
+      // CRITICAL: Refetch the user within the transaction to obtain a read-lock 
+      // preventing race condition (double spending) exploits.
+      const txUser = await User.findById(req.user._id).session(session);
+      if (!txUser || txUser.wallet.balance < booking.totalAmount) {
+        throw new Error('Insufficient balance or user not found during transaction execution');
+      }
+
+      const previousCustomerBalance = txUser.wallet.balance;
+      txUser.wallet.balance -= booking.totalAmount;
+      await txUser.save({ session });
 
       const customerReference = generateReference('PAY');
       await WalletTransaction.create([{
@@ -542,13 +556,13 @@ exports.processBookingPayment = async (req, res) => {
       emailService.sendPaymentReceipt(
         { amount: booking.totalAmount, reference: customerReference, serviceName: booking.service.name,
           providerName: provider.name, bookingId: String(booking._id),
-          previousBalance: previousCustomerBalance, newBalance: user.wallet.balance },
-        user.email, user.name
+          previousBalance: previousCustomerBalance, newBalance: txUser.wallet.balance },
+        txUser.email, txUser.name
       ).catch(err => console.error('Customer payment email error:', err));
 
       emailService.sendPaymentReceived(
         { amount: booking.totalAmount, reference: providerReference, serviceName: booking.service.name,
-          customerName: user.name, bookingId: String(booking._id),
+          customerName: txUser.name, bookingId: String(booking._id),
           previousBalance: previousProviderBalance, newBalance: provider.wallet.balance },
         provider.email, provider.name
       ).catch(err => console.error('Provider payment email error:', err));
