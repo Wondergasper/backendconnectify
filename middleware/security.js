@@ -1,7 +1,6 @@
 // middleware/security.js
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
-const mongoSanitize = require('express-mongo-sanitize');
 const hpp = require('hpp');
 const analyticsService = require('../services/analyticsService');
 
@@ -111,12 +110,6 @@ const xssProtection = (req, res, next) => {
   next();
 };
 
-// MongoDB query sanitization
-const mongoSanitization = mongoSanitize({
-  allowDots: true,
-  replaceWith: '_'
-});
-
 // HTTP Parameter Pollution protection
 const hppProtection = hpp();
 
@@ -129,7 +122,12 @@ const sameOriginGuard = (allowedOrigins = []) => {
       return next();
     }
 
-    const hasCookieAuth = Boolean(req.cookies?.accessToken || req.cookies?.refreshToken);
+    const hasCookieAuth = Boolean(
+      req.cookies?.accessToken ||
+      req.cookies?.refreshToken ||
+      req.cookies?.adminAccessToken ||
+      req.cookies?.adminRefreshToken
+    );
     if (!hasCookieAuth) {
       return next();
     }
@@ -189,7 +187,6 @@ module.exports = {
   searchRateLimiter,
   sameOriginGuard,
   xssProtection,
-  mongoSanitization,
   hppProtection,
   securityLogging,
   trackIP

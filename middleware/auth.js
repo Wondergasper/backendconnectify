@@ -1,14 +1,22 @@
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+const { userRepository } = require('../repositories/supabase/userRepository');
 
 const auth = async (req, res, next) => {
   try {
-    // First try to get token from cookies
+    // Priority 1: standard user session cookie
     let token = req.cookies.accessToken;
 
+    // Priority 2: Bearer token in Authorization header
     if (!token) {
-      // Fallback to Authorization header for compatibility during transition
       token = req.header('Authorization')?.replace('Bearer ', '');
+    }
+
+    // Priority 3: admin session cookie — allows admins who logged in via
+    // /admin/auth/login to reach any auth-protected route without a separate
+    // normal-user session. adminAuth middleware still provides the stricter
+    // admin-only guard on dedicated admin routes.
+    if (!token) {
+      token = req.cookies.adminAccessToken;
     }
 
     if (!token) {
@@ -16,9 +24,8 @@ const auth = async (req, res, next) => {
     }
 
     try {
-      // Try to verify the access token
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      const user = await User.findById(decoded.userId).select('-password');
+      const user = await userRepository.findById(decoded.userId);
 
       if (!user || user.isActive === false) {
         return res.status(401).json({ error: 'User not found or account is deactivated' });

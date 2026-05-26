@@ -4,9 +4,11 @@ const {
   getServiceReviews,
   getProviderReviews,
   getUserReviews,
-  getReviewById
+  getReviewById,
+  getAllReviews,
+  deleteReview
 } = require('../controllers/reviewController');
-const { auth } = require('../middleware/auth');
+const { auth, checkRole } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -14,6 +16,11 @@ const router = express.Router();
 // @desc    Create a review for a booking
 // @access  Private
 router.post('/', auth, createReview);
+
+// @route   GET api/reviews
+// @desc    Get all reviews for admin moderation
+// @access  Private/Admin
+router.get('/', auth, checkRole(['admin']), getAllReviews);
 
 // @route   GET api/reviews/service/:serviceId
 // @desc    Get reviews for a service
@@ -34,5 +41,10 @@ router.get('/user', auth, getUserReviews);
 // @desc    Get a specific review
 // @access  Public
 router.get('/:id', getReviewById);
+
+// @route   DELETE api/reviews/:id
+// @desc    Delete a review for moderation
+// @access  Private/Admin
+router.delete('/:id', auth, checkRole(['admin']), deleteReview);
 
 module.exports = router;

@@ -1,112 +1,107 @@
 // services/emailService.js
-// Use require with fallback handling for nodemailer
-let nodemailer;
+let Resend;
 try {
-  nodemailer = require('nodemailer');
-  // Handle both CommonJS and ES module exports
-  if (nodemailer.default) {
-    nodemailer = nodemailer.default;
-  }
+  Resend = require('resend').Resend;
 } catch (error) {
-  console.error('Failed to load nodemailer:', error.message);
-  nodemailer = null;
+  console.error('Failed to load resend SDK:', error.message);
+  Resend = null;
 }
 
 class EmailService {
   constructor() {
-    this.transporter = null;
+    this.resend = null;
     this._initialized = false;
+    
+    // Maintain a 100% backward-compatible transporter wrapper
+    this.transporter = {
+      sendMail: async (options) => {
+        return this.sendGenericEmail(options);
+      },
+      verify: async () => {
+        return this.testConnection();
+      }
+    };
   }
 
-  // Lazy initialization - only create transporter when first needed
+  // Lazy initialization - only create resend client when first needed
   _ensureTransporter() {
     if (this._initialized) {
-      return this.transporter !== null;
+      return this.resend !== null;
     }
 
     this._initialized = true;
 
-    if (!nodemailer) {
-      console.error('Nodemailer is not available. Email functionality disabled.');
+    if (!Resend) {
+      console.error('Resend SDK is not available. Email functionality disabled.');
       return false;
     }
 
-    if (typeof nodemailer.createTransport !== 'function' && typeof nodemailer.createTransporter !== 'function') {
-      console.error('Nodemailer.createTransport is not a function. Nodemailer version may be incompatible.');
-      console.error('Available nodemailer exports:', Object.keys(nodemailer));
+    if (!process.env.RESEND_API_KEY) {
+      console.warn('⚠️  RESEND_API_KEY is not defined in environment variables. Email functionality disabled.');
       return false;
     }
-
-    // Use createTransport (correct method name) with fallback to createTransporter
-    const createTransport = nodemailer.createTransport || nodemailer.createTransporter;
 
     try {
-      this.initTransporter(createTransport.bind(nodemailer));
+      this.resend = new Resend(process.env.RESEND_API_KEY);
+      console.log('✅ Resend AI Email Service initialized successfully');
       return true;
     } catch (error) {
-      console.error('Failed to initialize email transporter:', error.message);
+      console.error('Failed to initialize Resend client:', error.message);
       return false;
     }
   }
 
-  initTransporter(createTransport) {
-    // Create transporter based on environment
-    if (process.env.NODE_ENV === 'production') {
-      // Production: Use Zoho Mail SMTP (or other configured SMTP service)
-      this.transporter = createTransport({
-        host: process.env.SMTP_HOST || 'smtp.zoho.com',
-        port: parseInt(process.env.SMTP_PORT) || 465,
-        secure: process.env.SMTP_SECURE === 'true' || true, // true for 465 (Zoho default), false for 587
-        auth: {
-          user: process.env.SMTP_USER,
-          pass: process.env.SMTP_PASS
-        }
-      });
-    } else {
-      // Development: Use configured SMTP or ethereal.email test service
-      const hasSmtpConfig = process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS;
+  // Unified generic email sending function that routes via Resend
+  async sendGenericEmail({ to, subject, html, text, from }) {
+    if (!this._ensureTransporter()) {
+      console.warn('Email service (Resend) not configured. Skipping email.');
+      return { messageId: 'skipped_no_config', success: false };
+    }
 
-      if (hasSmtpConfig) {
-        // Use configured SMTP in development (allows testing with real Zoho Mail)
-        this.transporter = createTransport({
-          host: process.env.SMTP_HOST || 'smtp.zoho.com',
-          port: parseInt(process.env.SMTP_PORT) || 465,
-          secure: process.env.SMTP_SECURE === 'true' || true,
-          auth: {
-            user: process.env.SMTP_USER,
-            pass: process.env.SMTP_PASS
-          }
-        });
-      } else {
-        // Fallback to ethereal.email test service
-        this.transporter = createTransport({
-          host: "smtp.ethereal.email",
-          port: 587,
-          secure: false,
-          auth: {
-            user: process.env.SMTP_TEST_USER || 'your_test_email@ethereal.email',
-            pass: process.env.SMTP_TEST_PASS || 'your_test_password'
-          }
-        });
+    try {
+      const recipient = Array.isArray(to) ? to : [to];
+      const sender = from || process.env.EMAIL_FROM || 'Connectify Nigeria <noreply@connectify.ng>';
+
+      const payload = {
+        from: sender,
+        to: recipient,
+        subject: subject,
+        html: html || text || ''
+      };
+
+      // Add text fallback if html is not provided
+      if (text && !html) {
+        payload.text = text;
       }
+
+      const response = await this.resend.emails.send(payload);
+
+      if (response.error) {
+        throw new Error(response.error.message);
+      }
+
+      const messageId = response.data?.id || `resend_${Date.now()}`;
+      console.log(`✅ Email sent successfully via Resend: ${messageId}`);
+      
+      return {
+        messageId,
+        success: true
+      };
+    } catch (error) {
+      console.error('❌ Failed to send email via Resend:', error.message);
+      throw error;
     }
   }
-
 
   // Test email configuration
   async testConnection() {
     if (!this._ensureTransporter()) {
-      console.log('Email transporter not available for connection test');
+      console.warn('Email service (Resend) not configured for connection test');
       return false;
     }
-    try {
-      const result = await this.transporter.verify();
-      console.log('Email server connection verified:', result);
-      return true;
-    } catch (error) {
-      console.error('Email server connection failed:', error);
-      return false;
-    }
+    // Resend is HTTP-based, so checking if client is successfully configured is sufficient
+    console.log('Resend email API key configuration checked: ACTIVE');
+    return true;
   }
 
   // Send booking confirmation email

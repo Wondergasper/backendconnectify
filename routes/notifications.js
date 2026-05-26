@@ -3,7 +3,8 @@ const {
   getNotifications,
   markAsRead,
   markAllAsRead,
-  deleteNotification
+  deleteNotification,
+  getUnreadCount
 } = require('../controllers/notificationController');
 const { auth } = require('../middleware/auth');
 
@@ -28,5 +29,10 @@ router.put('/read-all', auth, markAllAsRead);
 // @desc    Delete notification
 // @access  Private
 router.delete('/:notificationId', auth, deleteNotification);
+
+// @route   GET api/notifications/unread
+// @desc    Get unread notification count
+// @access  Private
+router.get('/unread', auth, getUnreadCount);
 
 module.exports = router;

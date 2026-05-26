@@ -1,10 +1,11 @@
 // services/bookingReminderService.js
-const Booking = require('../models/Booking');
+const { bookingRepository } = require('../repositories/supabase/bookingRepository');
 const emailService = require('./emailService');
+const smsNotificationService = require('./notification/smsNotificationService');
 
 /**
  * Booking Reminder Service
- * Sends email reminders for bookings scheduled for the next day
+ * Sends email and SMS reminders for bookings scheduled for the next day
  */
 class BookingReminderService {
     constructor() {
@@ -53,32 +54,7 @@ class BookingReminderService {
      */
     async getUpcomingBookings() {
         try {
-            // Get tomorrow's date range
-            const now = new Date();
-            const tomorrow = new Date(now);
-            tomorrow.setDate(tomorrow.getDate() + 1);
-
-            // Set to start and end of tomorrow
-            const tomorrowStart = new Date(tomorrow);
-            tomorrowStart.setHours(0, 0, 0, 0);
-
-            const tomorrowEnd = new Date(tomorrow);
-            tomorrowEnd.setHours(23, 59, 59, 999);
-
-            // Find confirmed bookings for tomorrow that haven't been reminded yet
-            const bookings = await Booking.find({
-                date: {
-                    $gte: tomorrowStart,
-                    $lte: tomorrowEnd
-                },
-                status: 'confirmed',
-                reminderSent: { $ne: true } // Only get bookings that haven't been reminded
-            })
-                .populate('service', 'name price')
-                .populate('customer', 'name email')
-                .populate('provider', 'name email');
-
-            return bookings;
+            return bookingRepository.listUpcomingReminders(new Date());
         } catch (error) {
             console.error('Error getting upcoming bookings:', error);
             return [];
@@ -86,7 +62,7 @@ class BookingReminderService {
     }
 
     /**
-     * Send reminder emails for upcoming bookings
+     * Send reminder emails and SMS for upcoming bookings
      */
     async sendReminders() {
         try {
@@ -106,7 +82,7 @@ class BookingReminderService {
 
             for (const booking of bookings) {
                 try {
-                    // Prepare booking data for email
+                    // Prepare booking data for reminders
                     const bookingData = {
                         _id: booking._id,
                         date: booking.date,
@@ -118,7 +94,7 @@ class BookingReminderService {
                         service: booking.service
                     };
 
-                    // Send reminder to customer
+                    // 1. Send reminder to customer (Email)
                     if (booking.customer?.email) {
                         await emailService.sendBookingReminder(
                             bookingData,
@@ -126,10 +102,20 @@ class BookingReminderService {
                             booking.customer.name,
                             'customer'
                         );
-                        console.log(`✅ Reminder sent to customer: ${booking.customer.email}`);
+                        console.log(`✅ Email reminder sent to customer: ${booking.customer.email}`);
                     }
 
-                    // Send reminder to provider
+                    // 2. Send reminder to customer (SMS)
+                    if (booking.customer?.phone) {
+                        await smsNotificationService.sendTemplatedSms('booking_reminder', {
+                            phone: booking.customer.phone,
+                            time: bookingData.time,
+                            serviceName: bookingData.serviceName,
+                            address: bookingData.address
+                        });
+                    }
+
+                    // 3. Send reminder to provider (Email)
                     if (booking.provider?.email) {
                         await emailService.sendBookingReminder(
                             bookingData,
@@ -137,13 +123,21 @@ class BookingReminderService {
                             booking.provider.name,
                             'provider'
                         );
-                        console.log(`✅ Reminder sent to provider: ${booking.provider.email}`);
+                        console.log(`✅ Email reminder sent to provider: ${booking.provider.email}`);
+                    }
+
+                    // 4. Send reminder to provider (SMS)
+                    if (booking.provider?.phone) {
+                        await smsNotificationService.sendTemplatedSms('booking_reminder', {
+                            phone: booking.provider.phone,
+                            time: bookingData.time,
+                            serviceName: bookingData.serviceName,
+                            address: bookingData.address
+                        });
                     }
 
                     // Mark booking as reminded
-                    booking.reminderSent = true;
-                    await booking.save();
-
+                    await bookingRepository.markReminderSent(booking._id);
                     sent++;
                 } catch (error) {
                     console.error(`❌ Failed to send reminder for booking ${booking._id}:`, error.message);

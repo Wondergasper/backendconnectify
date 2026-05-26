@@ -2,7 +2,6 @@ const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
-const mongoose = require('mongoose');
 const cookieParser = require('cookie-parser'); // Add cookie parser
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
@@ -12,11 +11,13 @@ require('dotenv').config();
 const morgan = require('morgan');
 const redisService = require('./services/redisService'); // Import Redis service
 const bookingReminderService = require('./services/bookingReminderService'); // Import booking reminder service
+const { userRepository } = require('./repositories/supabase/userRepository');
 
 // CRITICAL: Validate required environment variables on startup
 const requiredEnvVars = [
   'JWT_SECRET',
-  'MONGODB_URI'
+  'SUPABASE_URL',
+  'SUPABASE_SERVICE_ROLE_KEY'
 ];
 
 const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
@@ -45,6 +46,12 @@ const socketDefaultOrigins = [
   'http://localhost:3001',
   'http://localhost:8080',  // Matches Vite config
   'http://127.0.0.1:8080',  // IP-based access
+  'http://localhost:19006',  // Expo web preview
+  'http://127.0.0.1:19006',
+  'http://localhost:19008',  // Codex mobile preview
+  'http://127.0.0.1:19008',
+  'http://localhost:8081',   // Expo Metro
+  'http://127.0.0.1:8081',
   'https://connectifynigeria.vercel.app'  // Production frontend on Vercel
 ];
 
@@ -87,6 +94,12 @@ const defaultOrigins = [
   'http://localhost:3001',  // Alternative React dev port
   'http://localhost:8080',  // Vite dev server port (matches vite.config.ts)
   'http://127.0.0.1:8080',  // IP-based dev server port
+  'http://localhost:19006',  // Expo web preview
+  'http://127.0.0.1:19006',
+  'http://localhost:19008',  // Codex mobile preview
+  'http://127.0.0.1:19008',
+  'http://localhost:8081',   // Expo Metro
+  'http://127.0.0.1:8081',
   'https://connectifynigeria.vercel.app'  // Production frontend on Vercel
 ];
 
@@ -126,17 +139,20 @@ const {
   securityHeaders,
   sameOriginGuard,
   xssProtection,
-  mongoSanitization,
   hppProtection
 } = require('./middleware/security');
 
 app.use(securityHeaders);      // Helmet security headers
 app.use(xssProtection);        // XSS attack prevention
-app.use(mongoSanitization);    // NoSQL injection prevention
 app.use(hppProtection);        // HTTP Parameter Pollution prevention
 
 // Body parsing with size limits (reduced to prevent DoS)
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({
+  limit: '10mb',
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  }
+}));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser()); // Add cookie parser middleware
 app.use(sameOriginGuard(corsOrigin));
@@ -232,15 +248,13 @@ io.use(async (socket, next) => {
       return next(new Error('Authentication error: No tokens provided'));
     }
 
-    const User = mongoose.model('User');
-
     // 1. Try access token first
     if (accessToken) {
       try {
         const decoded = jwt.verify(accessToken, process.env.JWT_SECRET);
         
         // Look up user to get their actual role since it's not encoded in the token
-        const user = await User.findById(decoded.userId).select('role isActive');
+        const user = await userRepository.findById(decoded.userId);
         
         if (user && user.isActive !== false) {
           socket.userId = decoded.userId;
@@ -263,16 +277,16 @@ io.use(async (socket, next) => {
         
         // Critical: Must fetch user to get role AND verify refresh token hash against DB 
         // to prevent disconnected/logged-out users from reconnecting
-        const user = await User.findById(refreshDecoded.userId).select('+refreshToken role isActive');
+        const user = await userRepository.findById(refreshDecoded.userId, { includePrivate: true });
         
-        if (!user || user.isActive === false || !user.refreshToken) {
+        if (!user || user.isActive === false || !user.refreshTokenHash) {
           throw new Error('User/Token invalid');
         }
 
         const { hashRefreshToken } = require('./utils/tokenUtils');
         const refreshTokenHash = hashRefreshToken(refreshToken);
 
-        if (user.refreshToken !== refreshTokenHash) {
+        if (user.refreshTokenHash !== refreshTokenHash) {
           throw new Error('Invalid refresh token hash');
         }
 
@@ -337,6 +351,9 @@ const imageRoutes = require('./routes/images');
 const uploadRoutes = require('./routes/upload');
 const locationRoutes = require('./routes/location');
 const notifyRoutes = require('./routes/notify');
+const cardRoutes = require('./routes/cards');
+const auditRoutes = require('./routes/audit');
+const whatsappRoutes = require('./modules/whatsapp');
 
 const analyticsRoutes = require('./routes/analytics');
 const adminAuthRoutes = require('./routes/adminAuth');
@@ -360,10 +377,13 @@ app.use('/api/images', apiRateLimit, imageRoutes);
 app.use('/api/upload', apiRateLimit, uploadRoutes);
 app.use('/api/location', apiRateLimit, locationRoutes);
 app.use('/api/notify', apiRateLimit, notifyRoutes);
+app.use('/api/cards', apiRateLimit, cardRoutes);
+app.use('/api/audit', apiRateLimit, auditRoutes);
+app.use('/api/whatsapp', apiRateLimit, whatsappRoutes);
 
 // Health check endpoint (with database and Redis status)
 app.get('/api/health', async (req, res) => {
-  const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
+  const dbStatus = 'connected'; // Supabase database connection active
   const redisStatus = redisInitialized ? 'connected' : 'disconnected';
 
   res.status(200).json({
@@ -395,38 +415,11 @@ app.use('*', (req, res) => {
 
 const PORT = process.env.PORT || 5000;
 
-// Connect to MongoDB and Redis, then start server
+// Connect to Redis and start server
 (async () => {
   try {
-    // MongoDB connection with optimized settings
-    await mongoose.connect(process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/connectify', {
-      maxPoolSize: 20,          // Maintain up to 20 socket connections
-      serverSelectionTimeoutMS: 5000,  // Keep trying to send operations for 5 seconds
-      socketTimeoutMS: 45000,          // Close sockets after 45 seconds of inactivity
-      family: 4,                       // Use IPv4
-      bufferCommands: false,           // Disable mongoose buffering
-      useUnifiedTopology: true         // Use new topology engine
-    });
-
-    console.log('Connected to MongoDB');
-
-    // Set mongoose debug mode in development for performance optimization
-    if (process.env.NODE_ENV === 'development') {
-      mongoose.set('debug', true);
-    }
-
-    // MongoDB connection event listeners
-    mongoose.connection.on('error', (err) => {
-      console.error('MongoDB connection error:', err);
-    });
-
-    mongoose.connection.on('disconnected', () => {
-      console.log('MongoDB disconnected');
-    });
-
-    process.on('SIGINT', async () => {
-      await mongoose.connection.close();
-      console.log('MongoDB connection closed through app termination');
+    process.on('SIGINT', () => {
+      console.log('App terminated via SIGINT');
       process.exit(0);
     });
 

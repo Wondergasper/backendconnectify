@@ -1,4 +1,4 @@
-const Service = require('../models/Service');
+const { serviceRepository } = require('../repositories/supabase/serviceRepository');
 
 // Add service images (from URLs)
 exports.addServiceImages = async (req, res) => {
@@ -10,26 +10,26 @@ exports.addServiceImages = async (req, res) => {
       return res.status(400).json({ error: 'Image URLs are required' });
     }
 
-    const service = await Service.findById(serviceId);
+    const service = await serviceRepository.findById(serviceId);
 
     if (!service) {
       return res.status(404).json({ error: 'Service not found' });
     }
 
     // Check if the user owns this service
-    if (service.provider.toString() !== req.user._id.toString()) {
+    const providerId = (service.provider && service.provider.id) || service.provider;
+    if (providerId.toString() !== req.user.id.toString()) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
     // Add new images to the service (filter out duplicates)
     const uniqueImages = [...new Set([...(service.images || []), ...imageUrls])];
-    service.images = uniqueImages;
     
-    await service.save();
+    const updatedService = await serviceRepository.updateService(serviceId, { images: uniqueImages }, req.user);
 
     res.json({
       success: true,
-      data: service,
+      data: updatedService,
       message: 'Images added successfully'
     });
   } catch (error) {
@@ -43,25 +43,26 @@ exports.removeServiceImage = async (req, res) => {
   try {
     const { serviceId, imageUrl } = req.body;
 
-    const service = await Service.findById(serviceId);
+    const service = await serviceRepository.findById(serviceId);
 
     if (!service) {
       return res.status(404).json({ error: 'Service not found' });
     }
 
     // Check if the user owns this service
-    if (service.provider.toString() !== req.user._id.toString()) {
+    const providerId = (service.provider && service.provider.id) || service.provider;
+    if (providerId.toString() !== req.user.id.toString()) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
     // Remove the image from the array
-    service.images = (service.images || []).filter(img => img !== imageUrl);
+    const remainingImages = (service.images || []).filter(img => img !== imageUrl);
     
-    await service.save();
+    const updatedService = await serviceRepository.updateService(serviceId, { images: remainingImages }, req.user);
 
     res.json({
       success: true,
-      data: service,
+      data: updatedService,
       message: 'Image removed successfully'
     });
   } catch (error) {

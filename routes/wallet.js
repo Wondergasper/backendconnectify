@@ -107,7 +107,7 @@ router.post(
   [
     body('bookingId')
       .notEmpty().withMessage('Booking ID is required')
-      .isMongoId().withMessage('Invalid booking ID format'),
+      .isUUID().withMessage('Invalid booking ID format'),
   ],
   processBookingPayment
 );

@@ -1,4 +1,5 @@
 const supabaseNotificationService = require('./supabaseNotificationService');
+const pushService = require('./pushService');
 
 const normalizeNotification = (notification) => {
   if (!notification) {
@@ -17,18 +18,50 @@ const normalizeNotification = (notification) => {
 };
 
 class InAppService {
-  async sendInApp({ userId, title, body, message, type = 'system', data = {} }) {
+  async sendInApp({ userId, title, body, message, type = 'system', data = {}, fcmToken }) {
     if (!userId) {
       throw new Error('User ID is required');
     }
 
+    const notificationMsg = body || message || '';
+
+    // 1. Persist the notification to the database via Supabase
     const notification = await supabaseNotificationService.createNotification({
       userId,
       title,
-      message: body || message || '',
+      message: notificationMsg,
       type,
       data
     });
+
+    // 2. Resolve FCM token for Firebase push notification
+    let targetFcmToken = fcmToken;
+    if (!targetFcmToken) {
+      try {
+        const { userRepository } = require('../../repositories/supabase/userRepository');
+        const user = await userRepository.findById(userId);
+        if (user && user.fcmToken) {
+          targetFcmToken = user.fcmToken;
+        }
+      } catch (dbError) {
+        console.warn('⚠️ Could not fetch FCM token from repository for push:', dbError.message);
+      }
+    }
+
+    // 3. Dispatch Firebase Push Notification asynchronously if token exists
+    if (targetFcmToken) {
+      try {
+        pushService.sendPushNotification(targetFcmToken, {
+          title,
+          body: notificationMsg,
+          data
+        }).catch(err => {
+          console.error('❌ Background FCM dispatch error:', err.message);
+        });
+      } catch (pushError) {
+        console.error('⚠️ Failed to initiate push notification dispatch:', pushError.message);
+      }
+    }
 
     return {
       success: true,

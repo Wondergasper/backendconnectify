@@ -1,6 +1,4 @@
-const Message = require('../models/Message');
-const Conversation = require('../models/Conversation');
-const User = require('../models/User');
+const { conversationRepository, messageRepository, userRepository } = require('../repositories/supabase');
 const redisService = require('../services/redisService');
 
 // Get conversations for user
@@ -9,14 +7,12 @@ exports.getConversations = async (req, res) => {
     const startTime = Date.now();
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
-
-    // Generate cache key based on user ID and pagination
-    const cacheKey = `conversations:${req.user._id}:${page}:${limit}`;
+    const userId = req.user._id || req.user.id;
 
     // Try to get from Redis cache first
-    const cachedConversations = await redisService.getCachedConversations(req.user._id);
+    const cachedConversations = await redisService.getCachedConversations(userId);
     if (cachedConversations) {
-      console.log(`Conversations cache HIT for user: ${req.user._id}`);
+      console.log(`Conversations cache HIT for user: ${userId}`);
       const responseTime = Date.now() - startTime;
       return res.json({
         success: true,
@@ -26,88 +22,31 @@ exports.getConversations = async (req, res) => {
       });
     }
 
-    // Find all conversations where user is a participant with optimized query
-    const conversations = await Conversation.find({
-      participants: req.user._id
-    })
-      .select('_id participants service lastMessage lastMessageAt participantReadStatus') // Only select needed fields
-      .populate({
-        path: 'participants',
-        select: 'name profile.avatar _id' // Only select needed fields
-      })
-      .populate('service', 'name _id') // Only select needed fields
-      .sort({ lastMessageAt: -1 })
-      .limit(limit)
-      .skip((page - 1) * limit)
-      .lean(); // Use lean() to return plain objects
+    // Find all conversations where user is a participant
+    const listResult = await conversationRepository.listUserConversations(userId, { page, limit });
 
-    // Use aggregation pipeline for better performance with multiple operations
-    const conversationsWithDetails = await Promise.all(
-      conversations.map(async (conversation) => {
-        // Get last message efficiently
-        const lastMessage = await Message.findOne({
-          conversation: conversation._id
-        })
-          .select('content createdAt sender') // Only select needed fields
-          .sort({ createdAt: -1 })
-          .lean();
-
-        // Efficiently calculate unread count
-        const readStatus = conversation.participantReadStatus.find(status =>
-          status.user.toString() === req.user._id.toString()
-        );
-
-        let unreadCount = 0;
-
-        if (readStatus && readStatus.lastReadAt) {
-          // Count unread messages from the time user last read
-          unreadCount = await Message.countDocuments({
-            conversation: conversation._id,
-            createdAt: { $gt: readStatus.lastReadAt },
-            sender: { $ne: req.user._id }
-          });
-        } else {
-          // Count all messages from other participants if never read
-          unreadCount = await Message.countDocuments({
-            conversation: conversation._id,
-            sender: { $ne: req.user._id }
-          });
-        }
-
-        // Update the conversation's unread count
-        await Conversation.updateOne(
-          { _id: conversation._id, 'participantReadStatus.user': req.user._id },
-          { $set: { 'participantReadStatus.$.unreadCount': unreadCount } }
-        );
-
-        return {
-          ...conversation,
-          lastMessage: lastMessage ? lastMessage.content : conversation.lastMessage,
-          lastMessageAt: lastMessage ? lastMessage.createdAt : conversation.lastMessageAt,
-          unreadCount
-        };
-      })
-    );
-
-    // Count total conversations efficiently
-    const total = await Conversation.countDocuments({
-      participants: req.user._id
+    // Map unread count for each conversation based on current user
+    const conversationsWithDetails = listResult.data.map(conversation => {
+      const userReadStatus = conversation.participantReadStatus.find(status => {
+        const statusUserId = status.user && typeof status.user === 'object' ? status.user.id : status.user;
+        return String(statusUserId) === String(userId);
+      });
+      const unreadCount = userReadStatus ? userReadStatus.unreadCount : 0;
+      return {
+        ...conversation,
+        unreadCount
+      };
     });
 
     const responseTime = Date.now() - startTime;
 
     // Cache the result in Redis for 5 minutes
-    await redisService.cacheConversations(req.user._id, conversationsWithDetails, 300); // 5 minutes
+    await redisService.cacheConversations(userId, conversationsWithDetails, 300);
 
     res.json({
       success: true,
       data: conversationsWithDetails,
-      pagination: {
-        page,
-        limit,
-        total,
-        pages: Math.ceil(total / limit)
-      },
+      pagination: listResult.pagination,
       responseTimeMs: responseTime
     });
   } catch (error) {
@@ -122,86 +61,45 @@ exports.getMessages = async (req, res) => {
     const { conversationId } = req.params;
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
+    const userId = req.user._id || req.user.id;
 
-    // Check if user is part of the conversation with efficient query
-    const conversation = await Conversation.findOne({
-      _id: conversationId,
-      participants: req.user._id
-    }).select('_id participants participantReadStatus'); // Only select needed fields
+    // Check if user is part of the conversation
+    const conversation = await conversationRepository.findById(conversationId);
 
     if (!conversation) {
       return res.status(404).json({ error: 'Conversation not found or access denied' });
     }
 
-    // Use efficient query with projection to limit data
-    const messages = await Message.find({
-      conversation: conversationId
-    })
-      .populate({
-        path: 'sender',
-        select: 'name profile.avatar _id' // Only select needed sender fields
-      })
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .skip((page - 1) * limit)
-      .select('-readBy -reactions') // Exclude large arrays that aren't needed for display
-      .lean(); // Use lean() to return plain JS objects (faster)
+    const isParticipant = conversation.participants.some(p => {
+      const pId = p && typeof p === 'object' ? p.id : p;
+      return String(pId) === String(userId);
+    });
 
-    // Batch-update read status using aggregation pipeline
-    const lastMessage = await Message.findOne({
-      conversation: conversationId
-    })
-      .sort({ createdAt: -1 })
-      .select('_id')
-      .lean();
-
-    if (lastMessage) {
-      // Use findOneAndUpdate to atomically update the conversation
-      await Conversation.findOneAndUpdate(
-        {
-          _id: conversationId,
-          'participantReadStatus.user': req.user._id
-        },
-        {
-          $set: {
-            'participantReadStatus.$.lastReadMessage': lastMessage._id,
-            'participantReadStatus.$.lastReadAt': new Date(),
-            'participantReadStatus.$.unreadCount': 0 // Reset unread count
-          }
-        }
-      );
-
-      // If user not found in readStatus, add them
-      await Conversation.findOneAndUpdate(
-        {
-          _id: conversationId,
-          'participantReadStatus.user': { $ne: req.user._id }
-        },
-        {
-          $push: {
-            participantReadStatus: {
-              user: req.user._id,
-              lastReadMessage: lastMessage._id,
-              lastReadAt: new Date(),
-              unreadCount: 0
-            }
-          }
-        }
-      );
+    if (!isParticipant) {
+      return res.status(404).json({ error: 'Conversation not found or access denied' });
     }
 
-    // Count total messages efficiently
-    const total = await Message.countDocuments({ conversation: conversationId });
+    // Fetch messages
+    const messagesResult = await messageRepository.getConversationMessages(conversationId, { page, limit });
+
+    // Mark messages as read and update conversation read status in background
+    if (messagesResult.data.length > 0) {
+      const lastMessage = messagesResult.data[0];
+
+      // Update read status for messages sent by other participants
+      await messageRepository.markMessagesAsRead(conversationId, userId);
+
+      // Update conversation's participantReadStatus
+      await conversationRepository.markAsRead(conversationId, userId, lastMessage.id);
+
+      // Clear user conversations cache
+      await redisService.invalidateUserCache(userId);
+    }
 
     res.json({
       success: true,
-      data: messages.reverse(), // Reverse to show in chronological order
-      pagination: {
-        page,
-        limit,
-        total,
-        pages: Math.ceil(total / limit)
-      }
+      data: [...messagesResult.data].reverse(), // Reverse to show in chronological order
+      pagination: messagesResult.pagination
     });
   } catch (error) {
     console.error('Get messages error:', error);
@@ -214,45 +112,30 @@ exports.getRecentMessages = async (req, res) => {
   try {
     const { conversationId } = req.params;
     const { since, lastMessageId } = req.query;
+    const userId = req.user._id || req.user.id;
 
     // Check if user is part of the conversation
-    const conversation = await Conversation.findOne({
-      _id: conversationId,
-      participants: req.user._id
-    });
+    const conversation = await conversationRepository.findById(conversationId);
 
     if (!conversation) {
       return res.status(404).json({ error: 'Conversation not found or access denied' });
     }
 
-    // Build query based on provided parameters
-    let query = { conversation: conversationId };
+    const isParticipant = conversation.participants.some(p => {
+      const pId = p && typeof p === 'object' ? p.id : p;
+      return String(pId) === String(userId);
+    });
 
-    if (since) {
-      // Get messages since a specific timestamp
-      query.createdAt = { $gt: new Date(since) };
-    } else if (lastMessageId) {
-      // Get messages after a specific message ID
-      const lastMessage = await Message.findById(lastMessageId);
-      if (lastMessage) {
-        query.createdAt = { $gt: lastMessage.createdAt };
-      }
+    if (!isParticipant) {
+      return res.status(404).json({ error: 'Conversation not found or access denied' });
     }
 
-    // Fetch new messages with optimized query
-    const messages = await Message.find(query)
-      .populate({
-        path: 'sender',
-        select: 'name profile.avatar _id'
-      })
-      .sort({ createdAt: -1 })
-      .limit(50) // Limit to prevent large data transfers
-      .select('-readBy -reactions')
-      .lean();
+    // Fetch new messages
+    const messages = await messageRepository.getRecentMessages(conversationId, { since, lastMessageId });
 
     res.json({
       success: true,
-      data: messages.reverse(),
+      data: [...messages].reverse(),
       newerExists: messages.length > 0
     });
   } catch (error) {
@@ -266,47 +149,38 @@ exports.getLatestMessages = async (req, res) => {
   try {
     const { conversationId } = req.params;
     const limit = parseInt(req.query.limit) || 50;
+    const userId = req.user._id || req.user.id;
 
     // Check if user is part of the conversation
-    const conversation = await Conversation.findOne({
-      _id: conversationId,
-      participants: req.user._id
-    });
+    const conversation = await conversationRepository.findById(conversationId);
 
     if (!conversation) {
       return res.status(404).json({ error: 'Conversation not found or access denied' });
     }
 
-    // Get latest messages with optimized projections
-    const messages = await Message.find({ conversation: conversationId })
-      .populate({
-        path: 'sender',
-        select: 'name profile.avatar _id'
-      })
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .select('-readBy -reactions')
-      .lean();
+    const isParticipant = conversation.participants.some(p => {
+      const pId = p && typeof p === 'object' ? p.id : p;
+      return String(pId) === String(userId);
+    });
+
+    if (!isParticipant) {
+      return res.status(404).json({ error: 'Conversation not found or access denied' });
+    }
+
+    // Get latest messages
+    const messagesResult = await messageRepository.getConversationMessages(conversationId, { page: 1, limit });
 
     // Update read status in background
-    if (messages.length > 0) {
-      // Update read status for the user
-      const lastMessage = messages[0]; // Most recent message
-      await Conversation.updateOne(
-        { _id: conversationId, 'participantReadStatus.user': req.user._id },
-        {
-          $set: {
-            'participantReadStatus.$.lastReadMessage': lastMessage._id,
-            'participantReadStatus.$.lastReadAt': new Date(),
-            'participantReadStatus.$.unreadCount': 0
-          }
-        }
-      );
+    if (messagesResult.data.length > 0) {
+      const lastMessage = messagesResult.data[0];
+      await messageRepository.markMessagesAsRead(conversationId, userId);
+      await conversationRepository.markAsRead(conversationId, userId, lastMessage.id);
+      await redisService.invalidateUserCache(userId);
     }
 
     res.json({
       success: true,
-      data: messages.reverse()
+      data: [...messagesResult.data].reverse()
     });
   } catch (error) {
     console.error('Get latest messages error:', error);
@@ -317,18 +191,12 @@ exports.getLatestMessages = async (req, res) => {
 // New function to cleanup old messages (for TTL)
 exports.cleanupOldMessages = async (req, res) => {
   try {
-    // This function can be called periodically to clean up old messages
-    // It's designed to be called internally, not by API
-    const cutoffDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000); // 90 days ago
-
-    const deleted = await Message.deleteMany({
-      createdAt: { $lt: cutoffDate }
-    });
+    const result = await messageRepository.cleanupOldMessages(90);
 
     res.json({
       success: true,
-      deleted: deleted.deletedCount,
-      message: `Cleaned up ${deleted.deletedCount} messages older than 90 days`
+      deleted: result.deletedCount,
+      message: `Cleaned up ${result.deletedCount} messages older than 90 days`
     });
   } catch (error) {
     console.error('Cleanup old messages error:', error);
@@ -340,64 +208,72 @@ exports.cleanupOldMessages = async (req, res) => {
 exports.sendMessage = async (req, res) => {
   try {
     const { conversationId, content } = req.body;
+    const userId = req.user._id || req.user.id;
 
     // Check if user is part of the conversation
-    const conversation = await Conversation.findOne({
-      _id: conversationId,
-      participants: req.user._id
-    });
+    const conversation = await conversationRepository.findById(conversationId);
 
     if (!conversation) {
       return res.status(404).json({ error: 'Conversation not found or access denied' });
     }
 
-    const message = new Message({
-      conversation: conversationId,
-      sender: req.user._id,
-      recipient: conversation.participants.find(p => p.toString() !== req.user._id.toString()), // Other participant
+    const isParticipant = conversation.participants.some(p => {
+      const pId = p && typeof p === 'object' ? p.id : p;
+      return String(pId) === String(userId);
+    });
+
+    if (!isParticipant) {
+      return res.status(404).json({ error: 'Conversation not found or access denied' });
+    }
+
+    const otherParticipant = conversation.participants.find(p => {
+      const pId = p && typeof p === 'object' ? p.id : p;
+      return String(pId) !== String(userId);
+    });
+    const recipientId = otherParticipant && typeof otherParticipant === 'object' ? otherParticipant.id : otherParticipant;
+
+    // Create the message
+    const message = await messageRepository.createMessage({
+      conversationId,
+      senderId: userId,
+      recipientId,
       content
     });
 
-    await message.save();
-
-    // Update conversation with last message
-    await Conversation.findByIdAndUpdate(conversationId, {
-      lastMessage: content,
-      lastMessageAt: new Date()
-    });
-
-    await message.populate('sender', 'name profile.avatar');
+    // Update conversation with last message details
+    await conversationRepository.updateLastMessage(conversationId, content, userId);
 
     // Emit WebSocket events for real-time updates
-    const io = req.app.get('io'); // Get Socket.IO instance from app
+    const io = req.app.get('io');
     if (io) {
-      const recipientId = conversation.participants.find(p => p.toString() !== req.user._id.toString());
-
       // Emit to sender (confirmation)
-      io.to(`user_${req.user._id}`).emit('newMessage', {
-        ...message.toObject(),
+      io.to(`user_${userId}`).emit('newMessage', {
+        ...message,
         conversationId
       });
 
       // Emit to recipient (new message notification)
       if (recipientId) {
         io.to(`user_${recipientId}`).emit('newMessage', {
-          ...message.toObject(),
+          ...message,
           conversationId
         });
       }
 
       // Update conversation list for both users
-      const updatedConversation = await Conversation.findById(conversationId)
-        .populate('participants', 'name profile.avatar')
-        .populate('service', 'name');
-
+      const updatedConversation = await conversationRepository.findById(conversationId);
       if (updatedConversation) {
-        io.to(`user_${req.user._id}`).emit('conversationUpdated', [updatedConversation]);
+        io.to(`user_${userId}`).emit('conversationUpdated', [updatedConversation]);
         if (recipientId) {
           io.to(`user_${recipientId}`).emit('conversationUpdated', [updatedConversation]);
         }
       }
+    }
+
+    // Invalidate conversation cache for both participants
+    await redisService.invalidateUserCache(userId);
+    if (recipientId) {
+      await redisService.invalidateUserCache(recipientId);
     }
 
     res.status(201).json({
@@ -414,19 +290,16 @@ exports.sendMessage = async (req, res) => {
 exports.createConversation = async (req, res) => {
   try {
     const { recipientId, serviceId, bookingId } = req.body;
+    const userId = req.user._id || req.user.id;
 
-    // Check if both users exist
-    const recipient = await User.findById(recipientId);
+    // Check if recipient exists
+    const recipient = await userRepository.findById(recipientId);
     if (!recipient) {
       return res.status(404).json({ error: 'Recipient not found' });
     }
 
     // Check if a conversation already exists between these users
-    let conversation = await Conversation.findOne({
-      participants: { $all: [req.user._id, recipientId] },
-      service: serviceId || null,
-      booking: bookingId || null
-    });
+    let conversation = await conversationRepository.findConversationBetweenUsers(userId, recipientId, serviceId, bookingId);
 
     if (conversation) {
       return res.json({
@@ -436,17 +309,10 @@ exports.createConversation = async (req, res) => {
     }
 
     // Create new conversation
-    conversation = new Conversation({
-      participants: [req.user._id, recipientId],
-      service: serviceId || null,
-      booking: bookingId || null
-    });
-
-    await conversation.save();
-
-    await conversation.populate({
-      path: 'participants',
-      select: 'name profile.avatar'
+    conversation = await conversationRepository.createConversation({
+      participants: [userId, recipientId],
+      serviceId,
+      bookingId
     });
 
     res.status(201).json({
@@ -465,57 +331,37 @@ exports.getMessagesWithUser = async (req, res) => {
     const { userId } = req.params;
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
+    const currentUserId = req.user._id || req.user.id;
 
     // Check if the specified user exists
-    const otherUser = await User.findById(userId);
+    const otherUser = await userRepository.findById(userId);
     if (!otherUser) {
       return res.status(404).json({ error: 'User not found' });
     }
 
     // Find the conversation between these users
-    const conversation = await Conversation.findOne({
-      participants: { $all: [req.user._id, userId] }
-    });
+    const conversation = await conversationRepository.findConversationBetweenUsers(currentUserId, userId);
 
     if (!conversation) {
       return res.status(404).json({ error: 'No conversation found with this user' });
     }
 
-    const messages = await Message.find({
-      conversation: conversation._id
-    })
-      .populate('sender', 'name profile.avatar')
-      .sort({ createdAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
+    const messagesResult = await messageRepository.getConversationMessages(conversation.id, { page, limit });
 
     // Update read status for messages sent by other participant
-    await Message.updateMany({
-      conversation: conversation._id,
-      sender: { $ne: req.user._id },
-      read: false
-    }, {
-      read: true,
-      readAt: new Date()
-    });
+    await messageRepository.markMessagesAsRead(conversation.id, currentUserId);
 
     // Update conversation's last read time
-    await Conversation.findByIdAndUpdate(conversation._id, {
-      lastMessageAt: new Date()
-    });
-
-    // Count total messages
-    const total = await Message.countDocuments({ conversation: conversation._id });
+    const lastMessage = messagesResult.data[0];
+    if (lastMessage) {
+      await conversationRepository.markAsRead(conversation.id, currentUserId, lastMessage.id);
+    }
+    await redisService.invalidateUserCache(currentUserId);
 
     res.json({
       success: true,
-      data: messages.reverse(), // Reverse to show in chronological order
-      pagination: {
-        page,
-        limit,
-        total,
-        pages: Math.ceil(total / limit)
-      }
+      data: [...messagesResult.data].reverse(), // Reverse to show in chronological order
+      pagination: messagesResult.pagination
     });
   } catch (error) {
     console.error('Get messages with user error:', error);
@@ -527,32 +373,14 @@ exports.getMessagesWithUser = async (req, res) => {
 exports.searchConversations = async (req, res) => {
   try {
     const { search } = req.query;
+    const userId = req.user._id || req.user.id;
 
     if (!search) {
       return res.status(400).json({ error: 'Search query is required' });
     }
 
-    // Find conversations where user is a participant and the other participant matches search
-    const conversations = await Conversation.find({
-      participants: req.user._id
-    })
-      .populate({
-        path: 'participants',
-        select: 'name profile.avatar'
-      })
-      .populate('service', 'name');
-
-    // Filter conversations based on participant names or service name
-    const filteredConversations = conversations.filter(conversation => {
-      const otherParticipant = conversation.participants.find(p =>
-        p._id.toString() !== req.user._id.toString()
-      );
-
-      return otherParticipant && (
-        otherParticipant.name.toLowerCase().includes(search.toLowerCase()) ||
-        (conversation.service && conversation.service.name.toLowerCase().includes(search.toLowerCase()))
-      );
-    });
+    // Search conversations
+    const filteredConversations = await conversationRepository.searchConversations(userId, search);
 
     res.json({
       success: true,
@@ -568,40 +396,32 @@ exports.searchConversations = async (req, res) => {
 exports.markConversationAsRead = async (req, res) => {
   try {
     const { conversationId } = req.params;
+    const userId = req.user._id || req.user.id;
 
     // Check if user is part of the conversation
-    const conversation = await Conversation.findOne({
-      _id: conversationId,
-      participants: req.user._id
-    });
+    const conversation = await conversationRepository.findById(conversationId);
 
     if (!conversation) {
       return res.status(404).json({ error: 'Conversation not found or access denied' });
     }
 
-    // Update or add read status for the current user
-    const lastMessage = await Message.findOne({ conversation: conversationId })
-      .sort({ createdAt: -1 });
+    const isParticipant = conversation.participants.some(p => {
+      const pId = p && typeof p === 'object' ? p.id : p;
+      return String(pId) === String(userId);
+    });
+
+    if (!isParticipant) {
+      return res.status(404).json({ error: 'Conversation not found or access denied' });
+    }
+
+    // Update read status for the current user
+    const messagesResult = await messageRepository.getConversationMessages(conversationId, { page: 1, limit: 1 });
+    const lastMessage = messagesResult.data[0];
 
     if (lastMessage) {
-      const readStatusIndex = conversation.participantReadStatus.findIndex(status =>
-        status.user.toString() === req.user._id.toString()
-      );
-
-      if (readStatusIndex !== -1) {
-        // Update existing read status
-        conversation.participantReadStatus[readStatusIndex].lastReadMessage = lastMessage._id;
-        conversation.participantReadStatus[readStatusIndex].lastReadAt = new Date();
-      } else {
-        // Add new read status
-        conversation.participantReadStatus.push({
-          user: req.user._id,
-          lastReadMessage: lastMessage._id,
-          lastReadAt: new Date()
-        });
-      }
-
-      await conversation.save();
+      await messageRepository.markMessagesAsRead(conversationId, userId);
+      await conversationRepository.markAsRead(conversationId, userId, lastMessage.id);
+      await redisService.invalidateUserCache(userId);
     }
 
     res.json({
@@ -617,36 +437,8 @@ exports.markConversationAsRead = async (req, res) => {
 // Get user's unread message count
 exports.getUnreadCount = async (req, res) => {
   try {
-    // Find all conversations where user is a participant
-    const conversations = await Conversation.find({
-      participants: req.user._id
-    });
-
-    let totalUnread = 0;
-
-    for (const conversation of conversations) {
-      // Get the read status for current user in this conversation
-      const readStatus = conversation.participantReadStatus.find(status =>
-        status.user.toString() === req.user._id.toString()
-      );
-
-      if (readStatus && readStatus.lastReadMessage) {
-        // Count messages that were sent after user's last read message
-        const unreadCount = await Message.countDocuments({
-          conversation: conversation._id,
-          createdAt: { $gt: readStatus.lastReadAt },
-          sender: { $ne: req.user._id } // Only count messages from other users
-        });
-        totalUnread += unreadCount;
-      } else {
-        // If user has never read messages in this conversation, count all from others
-        const unreadCount = await Message.countDocuments({
-          conversation: conversation._id,
-          sender: { $ne: req.user._id }
-        });
-        totalUnread += unreadCount;
-      }
-    }
+    const userId = req.user._id || req.user.id;
+    const totalUnread = await conversationRepository.getUnreadCount(userId);
 
     res.json({
       success: true,

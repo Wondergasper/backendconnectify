@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+const { userRepository } = require('../repositories/supabase/userRepository');
 
 /**
  * Specialized auth middleware for the Admin Dashboard.
@@ -14,7 +14,7 @@ const adminAuth = async (req, res, next) => {
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.userId).select('role isActive');
+    const user = await userRepository.findById(decoded.userId);
 
     if (!user || user.role !== 'admin' || user.isActive === false) {
       return res.status(403).json({ error: 'Admin access denied' });

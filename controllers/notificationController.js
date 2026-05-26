@@ -78,6 +78,20 @@ const markAllAsRead = async (req, res) => {
   }
 };
 
+const getUnreadCount = async (req, res) => {
+  try {
+    const notifications = await inappService.getUserNotifications(req.user._id, 200, true);
+    const unreadCount = notifications.filter(n => !n.read).length;
+    res.json({
+      success: true,
+      data: { unreadCount }
+    });
+  } catch (error) {
+    console.error('Get unread notification count error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
 const deleteNotification = async (req, res) => {
   try {
     const { notificationId } = req.params;
@@ -98,9 +112,25 @@ const deleteNotification = async (req, res) => {
   }
 };
 
+const getUnreadCount = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const allNotifications = await inappService.getUserNotifications(userId, 200, true);
+    const unreadCount = allNotifications.filter(n => !n.read).length;
+    res.json({
+      success: true,
+      data: { unreadCount }
+    });
+  } catch (error) {
+    console.error('Get unread notification count error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
 module.exports = {
   getNotifications,
   markAsRead,
   markAllAsRead,
-  deleteNotification
+  deleteNotification,
+  getUnreadCount
 };

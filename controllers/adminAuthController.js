@@ -1,9 +1,15 @@
-const User = require('../models/User');
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { generateAccessToken, generateRefreshToken, hashRefreshToken } = require('../utils/tokenUtils');
 const { validationResult } = require('express-validator');
+const { generateAccessToken, generateRefreshToken, hashRefreshToken } = require('../utils/tokenUtils');
+const { userRepository } = require('../repositories/supabase/userRepository');
 
-// Admin Login
+const adminCookieOptions = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
+};
+
 exports.login = async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -12,12 +18,9 @@ exports.login = async (req, res) => {
     }
 
     const { email, password } = req.body;
+    const user = await userRepository.findForLogin({ email });
 
-    // Find user and explicitly check for admin role
-    const user = await User.findOne({ email, role: 'admin' }).select('+password');
-
-    if (!user || !(await user.comparePassword(password))) {
-      // SECURITY: Generic error message to prevent account discovery
+    if (!user || user.role !== 'admin' || !(await bcrypt.compare(password, user.passwordHash || ''))) {
       return res.status(401).json({ error: 'Invalid admin credentials' });
     }
 
@@ -25,29 +28,18 @@ exports.login = async (req, res) => {
       return res.status(403).json({ error: 'Admin account is deactivated' });
     }
 
-    // Generate tokens
     const accessToken = generateAccessToken(user._id);
     const { refreshToken, refreshTokenHash } = generateRefreshToken(user._id);
-
-    // Store the refresh token hash in the database
-    user.refreshToken = refreshTokenHash;
-    await user.save();
-
-    // Set Admin-specific cookies
-    const cookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-    };
+    await userRepository.updateRefreshToken(user._id, refreshTokenHash);
 
     res.cookie('adminAccessToken', accessToken, {
-      ...cookieOptions,
-      maxAge: 15 * 60 * 1000 // 15 mins
+      ...adminCookieOptions,
+      maxAge: 15 * 60 * 1000
     });
 
     res.cookie('adminRefreshToken', refreshToken, {
-      ...cookieOptions,
-      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+      ...adminCookieOptions,
+      maxAge: 7 * 24 * 60 * 60 * 1000
     });
 
     res.json({
@@ -67,29 +59,22 @@ exports.login = async (req, res) => {
   }
 };
 
-// Admin Logout
 exports.logout = async (req, res) => {
   try {
     if (req.user) {
-      await User.findByIdAndUpdate(req.user._id, { $unset: { refreshToken: 1 } });
+      await userRepository.clearRefreshToken(req.user._id);
     }
 
-    const cookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
-    };
-
-    res.clearCookie('adminAccessToken', cookieOptions);
-    res.clearCookie('adminRefreshToken', cookieOptions);
+    res.clearCookie('adminAccessToken', adminCookieOptions);
+    res.clearCookie('adminRefreshToken', adminCookieOptions);
 
     res.json({ success: true, message: 'Admin logged out' });
   } catch (error) {
+    console.error('Admin logout error:', error);
     res.status(500).json({ error: 'Logout failed' });
   }
 };
 
-// Verify Admin Session (used by frontend to check if still logged in)
 exports.verifySession = async (req, res) => {
   res.json({
     success: true,
@@ -102,4 +87,53 @@ exports.verifySession = async (req, res) => {
       }
     }
   });
+};
+
+exports.refreshToken = async (req, res) => {
+  try {
+    const incomingRefreshToken = req.cookies.adminRefreshToken;
+
+    if (!incomingRefreshToken) {
+      return res.status(401).json({ error: 'Admin refresh token not found. Please log in again.' });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(incomingRefreshToken, process.env.JWT_SECRET);
+    } catch {
+      return res.status(401).json({ error: 'Admin refresh token is invalid or expired. Please log in again.' });
+    }
+
+    const user = await userRepository.findById(decoded.userId, { includePrivate: true });
+
+    if (!user || user.refreshTokenHash !== hashRefreshToken(incomingRefreshToken)) {
+      if (user) {
+        await userRepository.clearRefreshToken(user._id);
+      }
+      return res.status(401).json({ error: 'Admin session is invalid. Please log in again.' });
+    }
+
+    if (user.role !== 'admin' || user.isActive === false) {
+      return res.status(403).json({ error: 'Admin access denied.' });
+    }
+
+    const newAccessToken = generateAccessToken(user._id);
+    const { refreshToken: newRefreshToken, refreshTokenHash: newRefreshTokenHash } = generateRefreshToken(user._id);
+    await userRepository.updateRefreshToken(user._id, newRefreshTokenHash);
+
+    res.cookie('adminAccessToken', newAccessToken, {
+      ...adminCookieOptions,
+      maxAge: 15 * 60 * 1000
+    });
+
+    res.cookie('adminRefreshToken', newRefreshToken, {
+      ...adminCookieOptions,
+      maxAge: 7 * 24 * 60 * 60 * 1000
+    });
+
+    res.json({ success: true, message: 'Admin token refreshed' });
+  } catch (error) {
+    console.error('Admin refresh token error:', error);
+    res.status(500).json({ error: 'Server error during token refresh' });
+  }
 };

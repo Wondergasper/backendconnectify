@@ -8,7 +8,7 @@ const crypto = require('crypto');
 
 /**
  * Generate a short-lived access token (15 minutes).
- * @param {string|import('mongoose').Types.ObjectId} userId
+ * @param {string} userId
  * @returns {string} signed JWT
  */
 const generateAccessToken = (userId) => {
@@ -20,7 +20,7 @@ const generateAccessToken = (userId) => {
 /**
  * Generate a long-lived refresh token (7 days) plus its SHA-256 hash.
  * Store the hash in the database; send the raw token in the httpOnly cookie.
- * @param {string|import('mongoose').Types.ObjectId} userId
+ * @param {string} userId
  * @returns {{ refreshToken: string, refreshTokenHash: string }}
  */
 const generateRefreshToken = (userId) => {

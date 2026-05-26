@@ -1,5 +1,5 @@
 const express = require('express');
-const { getUsers, getUserById, updateUser, deleteUser, registerFcmToken } = require('../controllers/userController');
+const { getUsers, getUserById, getUserSummary, updateUser, deleteUser, registerFcmToken } = require('../controllers/userController');
 const { auth, checkRole } = require('../middleware/auth');
 
 const router = express.Router();
@@ -8,6 +8,11 @@ const router = express.Router();
 // @desc    Get all users (admin only)
 // @access  Private/Admin
 router.get('/', auth, checkRole(['admin']), getUsers);
+
+// @route   GET api/users/:id/summary
+// @desc    Get admin user deep-dive summary
+// @access  Private/Admin
+router.get('/:id/summary', auth, checkRole(['admin']), getUserSummary);
 
 // @route   GET api/users/:id
 // @desc    Get user by ID

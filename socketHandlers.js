@@ -1,5 +1,4 @@
-const Conversation = require('./models/Conversation');
-const Booking = require('./models/Booking');
+const { conversationRepository, bookingRepository } = require('./repositories/supabase');
 const notificationService = require('./services/notification/inappService');
 
 const getId = (value) => {
@@ -9,6 +8,10 @@ const getId = (value) => {
 
   if (typeof value === 'string') {
     return value;
+  }
+
+  if (value.id) {
+    return String(value.id);
   }
 
   if (value._id) {
@@ -34,12 +37,18 @@ module.exports = function registerSocketHandlers(io, socket) {
       return;
     }
 
-    const conversation = await Conversation.findOne({
-      _id: conversationId,
-      participants: socket.userId
-    }).select('participants');
+    const conversation = await conversationRepository.findById(conversationId);
 
     if (!conversation) {
+      return;
+    }
+
+    const isParticipant = conversation.participants.some(p => {
+      const pId = p && typeof p === 'object' ? p.id : p;
+      return String(pId) === String(socket.userId);
+    });
+
+    if (!isParticipant) {
       return;
     }
 
@@ -73,12 +82,19 @@ module.exports = function registerSocketHandlers(io, socket) {
         return;
       }
 
-      const conversation = await Conversation.findOne({
-        _id: conversationId,
-        participants: socket.userId
-      }).select('_id');
+      const conversation = await conversationRepository.findById(conversationId);
 
       if (!conversation) {
+        if (ack) ack({ success: false, error: 'Conversation not found or access denied' });
+        return;
+      }
+
+      const isParticipant = conversation.participants.some(p => {
+        const pId = p && typeof p === 'object' ? p.id : p;
+        return String(pId) === String(socket.userId);
+      });
+
+      if (!isParticipant) {
         if (ack) ack({ success: false, error: 'Conversation not found or access denied' });
         return;
       }
@@ -156,9 +172,7 @@ module.exports = function registerSocketHandlers(io, socket) {
         return;
       }
 
-      const booking = await Booking.findById(bookingId)
-        .populate('customer', 'name email')
-        .populate('provider', 'name email');
+      const booking = await bookingRepository.findById(bookingId);
 
       if (!booking) {
         if (ack) ack({ success: false, error: 'Booking not found' });
@@ -166,9 +180,12 @@ module.exports = function registerSocketHandlers(io, socket) {
       }
 
       const requesterId = socket.userId;
+      const customerId = booking.customer && typeof booking.customer === 'object' ? booking.customer.id : booking.customer;
+      const providerId = booking.provider && typeof booking.provider === 'object' ? booking.provider.id : booking.provider;
+
       const isParticipant =
-        getId(booking.customer) === requesterId ||
-        getId(booking.provider) === requesterId;
+        String(customerId) === String(requesterId) ||
+        String(providerId) === String(requesterId);
 
       if (!isParticipant && socket.userRole !== 'admin') {
         if (ack) ack({ success: false, error: 'Access denied' });
@@ -176,13 +193,13 @@ module.exports = function registerSocketHandlers(io, socket) {
       }
 
       const payload = {
-        bookingId: booking._id,
+        bookingId: booking.id || booking._id,
         status: data?.status || booking.status,
         message: data?.message || `Booking status updated to ${data?.status || booking.status}`
       };
 
-      emitToUser(io, getId(booking.customer), 'bookingStatusChanged', payload);
-      emitToUser(io, getId(booking.provider), 'bookingStatusChanged', payload);
+      emitToUser(io, customerId, 'bookingStatusChanged', payload);
+      emitToUser(io, providerId, 'bookingStatusChanged', payload);
 
       if (ack) ack({ success: true });
     } catch (error) {

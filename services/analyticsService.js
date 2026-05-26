@@ -5,7 +5,6 @@ class AnalyticsService {
   constructor() {
     this.logger = this.createLogger();
     this.redis = require('../services/redisService');
-    this.db = require('mongoose');
   }
 
   createLogger() {

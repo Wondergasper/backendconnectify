@@ -5,16 +5,17 @@ exports.getStats = async (req, res) => {
     const stats = await analyticsService.getDashboardStats();
     
     if (!stats) {
-      // Fallback for when Redis might not have all data yet
-      const User = require('../models/User');
-      const Service = require('../models/Service');
-      const Booking = require('../models/Booking');
+      const { userRepository, serviceRepository, bookingRepository } = require('../repositories/supabase');
       
-      const [totalUsers, totalServices, totalBookings] = await Promise.all([
-        User.countDocuments(),
-        Service.countDocuments(),
-        Booking.countDocuments()
+      const [userRes, serviceRes, bookingRes] = await Promise.all([
+        userRepository.table().select('id', { count: 'exact', head: true }),
+        serviceRepository.table().select('id', { count: 'exact', head: true }),
+        bookingRepository.table().select('id', { count: 'exact', head: true })
       ]);
+      
+      const totalUsers = userRes.count || 0;
+      const totalServices = serviceRes.count || 0;
+      const totalBookings = bookingRes.count || 0;
       
       return res.json({
         success: true,

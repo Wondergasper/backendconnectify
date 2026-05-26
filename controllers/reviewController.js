@@ -1,84 +1,50 @@
-const Review = require('../models/Review');
-const Booking = require('../models/Booking');
-const User = require('../models/User');
-const Service = require('../models/Service');
+const { reviewRepository } = require('../repositories/supabase/reviewRepository');
+const { logAudit } = require('../utils/auditLogger');
+const notificationService = require('../services/notification/inappService');
 
-// Create a review for a completed booking
+const getStatusCode = (error) => {
+  const message = error.message || '';
+  if (message.includes('not found')) return 404;
+  if (message.includes('already reviewed') || message.includes('between 1 and 5')) return 400;
+  return 500;
+};
+
 exports.createReview = async (req, res) => {
   try {
     const { bookingId, rating, comment, images } = req.body;
 
-    // Find the booking to ensure it's completed and belongs to the user
-    const booking = await Booking.findOne({
-      _id: bookingId,
-      customer: req.user._id,
-      status: 'completed'
-    }).populate('provider service');
-
-    if (!booking) {
-      return res.status(404).json({ error: 'Booking not found or not completed' });
-    }
-
-    // Check if user has already reviewed this service/provider
-    const existingReview = await Review.findOne({
-      customer: req.user._id,
-      booking: bookingId
-    });
-
-    if (existingReview) {
-      return res.status(400).json({ error: 'You have already reviewed this booking' });
-    }
-
-    // Create the review
-    const review = new Review({
-      customer: req.user._id,
-      provider: booking.provider._id,
-      booking: bookingId,
-      service: booking.service._id,
+    const review = await reviewRepository.createForCompletedBooking({
+      bookingId,
+      customerId: req.user._id,
       rating,
       comment,
       images: images || []
     });
 
-    await review.save();
-
-    // Update the booking with the review reference
-    booking.rating = {
-      value: rating,
-      comment,
-      date: new Date()
-    };
-    await booking.save();
-
-    // Update provider's overall rating
-    const providerReviews = await Review.find({ provider: booking.provider._id });
-    const totalProviderRating = providerReviews.reduce((sum, r) => sum + r.rating, 0);
-    const avgProviderRating = totalProviderRating / providerReviews.length;
-
-    await User.findByIdAndUpdate(booking.provider._id, {
-      rating: {
-        average: avgProviderRating,
-        count: providerReviews.length
+    // Fire real-time notification to the provider
+    try {
+      const io = req.app.get('io');
+      const providerId = review.provider?._id || review.provider?.id || review.provider;
+      if (providerId) {
+        const notification = await notificationService.sendInApp({
+          userId: String(providerId),
+          title: 'New Review',
+          body: `You received a ${rating}-star review.`,
+          type: 'review',
+          data: {
+            bookingId,
+            serviceId: review.service?._id || review.service?.id || review.service,
+            rating
+          }
+        });
+        if (io) {
+          io.to(`user_${providerId}`).emit('newNotification', notification.notification);
+          io.to(`notifications_${providerId}`).emit('newNotification', notification.notification);
+        }
       }
-    });
-
-    // Update service's average rating
-    const serviceReviews = await Review.find({ service: booking.service._id });
-    const totalServiceRating = serviceReviews.reduce((sum, r) => sum + r.rating, 0);
-    const avgServiceRating = totalServiceRating / serviceReviews.length;
-
-    await Service.findByIdAndUpdate(booking.service._id, {
-      rating: {
-        average: avgServiceRating,
-        count: serviceReviews.length
-      }
-    });
-
-    await review.populate([
-      { path: 'customer', select: 'name profile.avatar' },
-      { path: 'provider', select: 'name profile.avatar' },
-      { path: 'service', select: 'name' }
-    ]);
+    } catch (notifError) {
+      console.error('Review notification error (non-fatal):', notifError.message);
+    }
 
     res.status(201).json({
       success: true,
@@ -86,44 +52,25 @@ exports.createReview = async (req, res) => {
     });
   } catch (error) {
     console.error('Create review error:', error);
-    res.status(500).json({ error: 'Server error' });
+    res.status(getStatusCode(error)).json({ error: error.message || 'Server error' });
   }
 };
 
-// Get reviews for a service
 exports.getServiceReviews = async (req, res) => {
   try {
-    const { serviceId } = req.params;
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-
-    const reviews = await Review.find({ service: serviceId })
-      .populate([
-        { path: 'customer', select: 'name profile.avatar' },
-        { path: 'provider', select: 'name profile.avatar' }
-      ])
-      .sort({ createdAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
-
-    const total = await Review.countDocuments({ service: serviceId });
-
-    // Calculate average rating for the service
-    const service = await Service.findById(serviceId);
-    const averageRating = reviews.length > 0
-      ? reviews.reduce((sum, review) => sum + review.rating, 0) / reviews.length
-      : 0;
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 10;
+    const { data, averageRating, pagination } = await reviewRepository.listByService({
+      serviceId: req.params.serviceId,
+      page,
+      limit
+    });
 
     res.json({
       success: true,
-      data: reviews,
-      averageRating: parseFloat(averageRating.toFixed(1)),
-      pagination: {
-        page,
-        limit,
-        total,
-        pages: Math.ceil(total / limit)
-      }
+      data,
+      averageRating,
+      pagination
     });
   } catch (error) {
     console.error('Get service reviews error:', error);
@@ -131,39 +78,21 @@ exports.getServiceReviews = async (req, res) => {
   }
 };
 
-// Get reviews for a provider
 exports.getProviderReviews = async (req, res) => {
   try {
-    const { providerId } = req.params;
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-
-    const reviews = await Review.find({ provider: providerId })
-      .populate([
-        { path: 'customer', select: 'name profile.avatar' },
-        { path: 'service', select: 'name' }
-      ])
-      .sort({ createdAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
-
-    const total = await Review.countDocuments({ provider: providerId });
-
-    // Calculate average rating for the provider
-    const averageRating = reviews.length > 0
-      ? reviews.reduce((sum, review) => sum + review.rating, 0) / reviews.length
-      : 0;
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 10;
+    const { data, averageRating, pagination } = await reviewRepository.listByProvider({
+      providerId: req.params.providerId,
+      page,
+      limit
+    });
 
     res.json({
       success: true,
-      data: reviews,
-      averageRating: parseFloat(averageRating.toFixed(1)),
-      pagination: {
-        page,
-        limit,
-        total,
-        pages: Math.ceil(total / limit)
-      }
+      data,
+      averageRating,
+      pagination
     });
   } catch (error) {
     console.error('Get provider reviews error:', error);
@@ -171,32 +100,20 @@ exports.getProviderReviews = async (req, res) => {
   }
 };
 
-// Get reviews by current user
 exports.getUserReviews = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-
-    const reviews = await Review.find({ customer: req.user._id })
-      .populate([
-        { path: 'provider', select: 'name profile.avatar' },
-        { path: 'service', select: 'name' }
-      ])
-      .sort({ createdAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
-
-    const total = await Review.countDocuments({ customer: req.user._id });
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 10;
+    const { data, pagination } = await reviewRepository.listByCustomer({
+      customerId: req.user._id,
+      page,
+      limit
+    });
 
     res.json({
       success: true,
-      data: reviews,
-      pagination: {
-        page,
-        limit,
-        total,
-        pages: Math.ceil(total / limit)
-      }
+      data,
+      pagination
     });
   } catch (error) {
     console.error('Get user reviews error:', error);
@@ -204,15 +121,9 @@ exports.getUserReviews = async (req, res) => {
   }
 };
 
-// Get a specific review
 exports.getReviewById = async (req, res) => {
   try {
-    const review = await Review.findById(req.params.id)
-      .populate([
-        { path: 'customer', select: 'name profile.avatar' },
-        { path: 'provider', select: 'name profile.avatar' },
-        { path: 'service', select: 'name' }
-      ]);
+    const review = await reviewRepository.findById(req.params.id);
 
     if (!review) {
       return res.status(404).json({ error: 'Review not found' });
@@ -225,5 +136,57 @@ exports.getReviewById = async (req, res) => {
   } catch (error) {
     console.error('Get review by ID error:', error);
     res.status(500).json({ error: 'Server error' });
+  }
+};
+
+exports.getAllReviews = async (req, res) => {
+  try {
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 25;
+    const rating = req.query.rating ? Number(req.query.rating) : undefined;
+
+    const { data, pagination } = await reviewRepository.listAll({
+      page,
+      limit,
+      rating,
+      search: req.query.search
+    });
+
+    res.json({
+      success: true,
+      data,
+      pagination
+    });
+  } catch (error) {
+    console.error('Get all reviews error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+exports.deleteReview = async (req, res) => {
+  try {
+    const result = await reviewRepository.deleteAndRecalculate(req.params.id);
+
+    await logAudit({
+      req,
+      action: 'Deleted review',
+      entityType: 'review',
+      entityId: req.params.id,
+      target: result.review?.comment?.slice(0, 80) || 'Review',
+      metadata: {
+        rating: result.review?.rating,
+        customer: result.review?.customer,
+        provider: result.review?.provider,
+        service: result.review?.service
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Review deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete review error:', error);
+    res.status(getStatusCode(error)).json({ error: error.message || 'Server error' });
   }
 };
