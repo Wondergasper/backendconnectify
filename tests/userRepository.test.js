@@ -114,5 +114,5 @@ test('UserRepository returns private auth fields only from private lookup', asyn
   assert.equal(user._id, 'user-1');
   assert.equal(user.passwordHash, 'hashed-password');
   assert.equal(user.refreshTokenHash, 'refresh-hash');
-  assert.ok(calls.some((call) => call[0] === 'or' && call[1].includes('email.eq.ada%40example.com')));
+  assert.ok(calls.some((call) => call[0] === 'or' && call[1].includes('email.eq."ada@example.com"')));
 });

@@ -103,7 +103,7 @@ test('BookingRepository lists bookings for both customer and provider roles', as
   });
 
   assert.equal(result.pagination.page, 2);
-  assert.ok(calls.some((call) => call[0] === 'or' && call[1] === 'customer_id.eq.user-1,provider_id.eq.user-1'));
+  assert.ok(calls.some((call) => call[0] === 'or' && call[1] === 'customer_id.eq."user-1",provider_id.eq."user-1"'));
   assert.ok(calls.some((call) => call[0] === 'eq' && call[1] === 'status' && call[2] === 'confirmed'));
   assert.ok(calls.some((call) => call[0] === 'range' && call[1] === 5 && call[2] === 9));
 });

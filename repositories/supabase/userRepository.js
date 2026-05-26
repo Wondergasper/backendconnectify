@@ -23,8 +23,11 @@ const PUBLIC_USER_SELECT = [
 
 const PRIVATE_USER_SELECT = `${PUBLIC_USER_SELECT},password_hash,refresh_token_hash,reset_password_token,reset_password_expire`;
 
-const encodeFilterValue = (value) =>
-  encodeURIComponent(String(value)).replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+const quotePostgrestValue = (val) => {
+  if (val === null || val === undefined) return 'null';
+  const escaped = String(val).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return `"${escaped}"`;
+};
 
 class UserRepository extends BaseRepository {
   constructor(clientFactory) {
@@ -41,8 +44,8 @@ class UserRepository extends BaseRepository {
 
   async findForLogin({ email, phone }) {
     const filters = [];
-    if (email) filters.push(`email.eq.${encodeFilterValue(String(email).toLowerCase())}`);
-    if (phone) filters.push(`phone.eq.${encodeFilterValue(phone)}`);
+    if (email) filters.push(`email.eq.${quotePostgrestValue(String(email).toLowerCase())}`);
+    if (phone) filters.push(`phone.eq.${quotePostgrestValue(phone)}`);
 
     if (filters.length === 0) {
       return null;
@@ -58,8 +61,8 @@ class UserRepository extends BaseRepository {
 
   async findByEmailOrPhone({ email, phone }) {
     const filters = [];
-    if (email) filters.push(`email.eq.${encodeFilterValue(String(email).toLowerCase())}`);
-    if (phone) filters.push(`phone.eq.${encodeFilterValue(phone)}`);
+    if (email) filters.push(`email.eq.${quotePostgrestValue(String(email).toLowerCase())}`);
+    if (phone) filters.push(`phone.eq.${quotePostgrestValue(phone)}`);
 
     if (filters.length === 0) {
       return null;

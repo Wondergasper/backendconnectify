@@ -6,8 +6,11 @@ const USER_COLUMNS = 'id,name,email,phone,role,profile,provider_details,rating_a
 const SERVICE_COLUMNS = 'id,name,provider_id,category,description,price,price_type,duration_minutes,images,location,rating_average,rating_count,services_offered,gallery,is_active,created_at,updated_at';
 const BOOKING_SELECT = `*,customer:customer_id(${USER_COLUMNS}),provider:provider_id(${USER_COLUMNS}),service:service_id(${SERVICE_COLUMNS})`;
 
-const encodeFilterValue = (value) =>
-  encodeURIComponent(String(value)).replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+const quotePostgrestValue = (val) => {
+  if (val === null || val === undefined) return 'null';
+  const escaped = String(val).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return `"${escaped}"`;
+};
 
 const stripUndefined = (payload) =>
   Object.fromEntries(Object.entries(payload).filter(([, value]) => value !== undefined));
@@ -79,14 +82,14 @@ class BookingRepository extends BaseRepository {
 
   async listUserBookings({ userId, type, status, page = 1, limit = 10 } = {}) {
     let query = this.table().select(BOOKING_SELECT, { count: 'exact' });
-    const encodedUserId = encodeFilterValue(userId);
+    const quotedUserId = quotePostgrestValue(userId);
 
     if (type === 'provider') {
       query = query.eq('provider_id', userId);
     } else if (type === 'customer') {
       query = query.eq('customer_id', userId);
     } else {
-      query = query.or(`customer_id.eq.${encodedUserId},provider_id.eq.${encodedUserId}`);
+      query = query.or(`customer_id.eq.${quotedUserId},provider_id.eq.${quotedUserId}`);
     }
 
     if (status) {
