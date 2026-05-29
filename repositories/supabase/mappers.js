@@ -306,6 +306,107 @@ const mapPrivatePaymentCardRow = (row) => {
   };
 };
 
+const mapProviderProfileRow = (row) => {
+  if (!row) return null;
+
+  return {
+    _id: row.id,
+    id: row.id,
+    userId: row.user_id,
+    providerType: row.provider_type || 'individual',
+    displayName: row.display_name,
+    businessName: row.business_name || null,
+    contactPersonName: row.contact_person_name || null,
+    description: row.description,
+    phone: row.phone,
+    email: row.email,
+    address: row.address,
+    location: compactObject(row.location),
+    operatingLocations: row.operating_locations || [],
+    verificationStatus: row.verification_status || 'pending',
+    rejectionReason: row.rejection_reason || null,
+    rating: Number(row.rating || 0),
+    isActive: row.is_active !== false,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+};
+
+const mapProviderServiceRow = (row) => {
+  if (!row) return null;
+
+  return {
+    _id: row.id,
+    id: row.id,
+    providerId: row.provider_id,
+    serviceName: row.service_name,
+    category: row.category,
+    description: row.description,
+    startingPrice: row.starting_price !== null ? Number(row.starting_price) : null,
+    priceType: row.price_type || 'fixed',
+    isAvailable: row.is_available !== false,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+};
+
+const mapTeamMemberRow = (row) => {
+  if (!row) return null;
+
+  return {
+    _id: row.id,
+    id: row.id,
+    providerId: row.provider_id,
+    fullName: row.full_name,
+    role: row.role,
+    phone: row.phone,
+    email: row.email || null,
+    status: row.status || 'active',
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+};
+
+const mapServiceRequestRow = (row) => {
+  if (!row) return null;
+
+  return {
+    _id: row.id,
+    id: row.id,
+    customerId: row.customer_id,
+    customer: row.customer ? mapUserRow(row.customer) : null,
+    customerType: row.customer_type || 'individual',
+    serviceCategory: row.service_category,
+    description: row.description,
+    location: compactObject(row.location),
+    budget: row.budget !== null ? Number(row.budget) : null,
+    urgency: row.urgency || 'normal',
+    preferredDate: row.preferred_date,
+    status: row.status || 'pending',
+    assignedProviderId: row.assigned_provider_id || null,
+    assignedTeamMemberId: row.assigned_team_member_id || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+};
+
+const mapJobQuoteRow = (row) => {
+  if (!row) return null;
+
+  return {
+    _id: row.id,
+    id: row.id,
+    requestId: row.request_id,
+    providerId: row.provider_id,
+    quotedAmount: Number(row.quoted_amount || 0),
+    estimatedDeliveryTime: row.estimated_delivery_time || null,
+    message: row.message || null,
+    status: row.status || 'pending',
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+};
+
 module.exports = {
   mapUserRow,
   mapPrivateUserRow,
@@ -320,5 +421,10 @@ module.exports = {
   mapConversationRow,
   mapVerificationRow,
   mapPaymentCardRow,
-  mapPrivatePaymentCardRow
+  mapPrivatePaymentCardRow,
+  mapProviderProfileRow,
+  mapProviderServiceRow,
+  mapTeamMemberRow,
+  mapServiceRequestRow,
+  mapJobQuoteRow
 };

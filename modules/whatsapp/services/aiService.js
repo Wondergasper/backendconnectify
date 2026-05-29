@@ -30,26 +30,33 @@ ${JSON.stringify(session, null, 2)}
 
 ## Your Task
 1. Extract the following from the conversation so far AND this message:
-   - **service**: The type of service they need (e.g., "plumber", "electrician"). Use null if unclear.
-   - **location**: The area/neighbourhood in Nigeria (e.g., "Ikeja", "Lekki Phase 1"). Use null if not mentioned.
-   - **date**: When they need the service (e.g., "tomorrow", "2024-07-20"). Use null if not mentioned.
-2. If any of [service, location] is still missing, write a friendly follow-up question in replyText.
-3. If both service AND location are present, set **isConfirmed: true** and write a brief confirmation summary in replyText asking the user to confirm.
-4. Never set isConfirmed: true if service or location is null.
+   - **service**: Type of service (e.g., "plumber"). Use null if unclear.
+   - **location**: Area in Nigeria (e.g., "Ikeja", "Lekki"). Use null if missing.
+   - **date**: Preferred date (e.g., "today", "2024-07-20"). Normalize relative dates based on today: ${new Date().toISOString().split('T')[0]}.
+   - **urgency**: Set to "emergency" if they need it "now", "immediately", or "ASAP". Otherwise "normal".
+   - **budget**: Any mentioned price range or limit. Use null if not mentioned.
+
+2. **Confirmation Logic**:
+   - If BOTH **service** AND **location** are present and clearly understood, set **isConfirmed: true**.
+   - If either is missing or vague, set **isConfirmed: false**.
+
+3. **Reply Generation**:
+   - If **isConfirmed** is false: Write a warm, brief follow-up asking for the missing info (e.g., "What area in Lagos are you in?"). Use 1 emoji.
+   - If **isConfirmed** is true: Write a brief summary of what you understood and ask: "Should I find the best providers for this now?"
 
 ## Response Format
-You MUST respond ONLY with valid JSON (no markdown, no code fences):
+You MUST respond ONLY with valid JSON:
 {
-  "replyText": "The exact WhatsApp message to send to the user.",
+  "replyText": "...",
   "sessionUpdates": {
-    "service": "string or null",
-    "location": "string or null",
-    "date": "string or null",
-    "isConfirmed": false
+    "service": "...",
+    "location": "...",
+    "date": "...",
+    "urgency": "...",
+    "budget": "...",
+    "isConfirmed": boolean
   }
 }
-
-Be warm, concise, and use simple English. You may use one or two emojis naturally.
   `.trim();
 }
 
@@ -61,7 +68,7 @@ Be warm, concise, and use simple English. You may use one or two emojis naturall
  */
 exports.analyzeIntent = async (message, session) => {
   try {
-    const model = getGenAI().getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const model = getGenAI().getGenerativeModel({ model: 'gemini-2.0-flash' });
     const prompt = buildPrompt(message, session);
 
     const result = await model.generateContent(prompt);

@@ -113,9 +113,9 @@ begin
     p_date,
     p_time,
     p_duration,
+    'pending',
     p_total_amount,
     'NGN',
-    'pending',
     'pending',
     p_notes,
     coalesce(p_address, '{}'::jsonb)

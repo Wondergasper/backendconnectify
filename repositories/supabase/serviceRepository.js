@@ -102,11 +102,16 @@ class ServiceRepository extends BaseRepository {
     return (ensureNoError(result, 'Search services') || []).map(mapServiceRow);
   }
 
-  async findById(id) {
-    const result = await this.table()
+  async findById(id, { includeInactive = false } = {}) {
+    let query = this.table()
       .select(SERVICE_SELECT)
-      .eq('id', id)
-      .maybeSingle();
+      .eq('id', id);
+
+    if (!includeInactive) {
+      query = query.eq('is_active', true);
+    }
+
+    const result = await query.maybeSingle();
 
     return mapServiceRow(ensureNoError(result, 'Find service by id'));
   }

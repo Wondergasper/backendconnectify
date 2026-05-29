@@ -4,6 +4,8 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const { generateAccessToken, generateRefreshToken, hashRefreshToken } = require('../utils/tokenUtils');
 const { userRepository } = require('../repositories/supabase/userRepository');
+const { providerProfileRepository } = require('../repositories/supabase/providerProfileRepository');
+
 
 const cookieOptions = (maxAge) => ({
   httpOnly: true,
@@ -18,17 +20,18 @@ const clearCookieOptions = {
   sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
 };
 
-const publicUserPayload = (user) => ({
+const publicUserPayload = (user, providerProfile = null) => ({
   id: user._id || user.id,
   name: user.name,
   email: user.email,
   phone: user.phone,
   role: user.role,
+  providerType: providerProfile ? providerProfile.providerType : null,
   profile: user.profile
 });
 
-const authResponse = (req, user, accessToken, refreshToken) => {
-  const responseData = { user: publicUserPayload(user) };
+const authResponse = (req, user, accessToken, refreshToken, providerProfile = null) => {
+  const responseData = { user: publicUserPayload(user, providerProfile) };
 
   if (req.header('X-Client-Type') === 'mobile' || req.query.includeTokens === 'true') {
     responseData.accessToken = accessToken;
@@ -37,6 +40,7 @@ const authResponse = (req, user, accessToken, refreshToken) => {
 
   return responseData;
 };
+
 
 const hashPassword = async (password) => {
   const salt = await bcrypt.genSalt(12);
@@ -89,6 +93,7 @@ exports.register = async (req, res) => {
   }
 };
 
+
 exports.login = async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -107,18 +112,25 @@ exports.login = async (req, res) => {
     const { refreshToken, refreshTokenHash } = generateRefreshToken(user._id);
     await userRepository.updateRefreshToken(user._id, refreshTokenHash);
 
+    // Fetch provider profile to include providerType in response
+    let providerProfile = null;
+    if (user.role === 'provider') {
+      providerProfile = await providerProfileRepository.findByUserId(user._id).catch(() => null);
+    }
+
     res.cookie('accessToken', accessToken, cookieOptions(15 * 60 * 1000));
     res.cookie('refreshToken', refreshToken, cookieOptions(7 * 24 * 60 * 60 * 1000));
 
     res.json({
       success: true,
-      data: authResponse(req, user, accessToken, refreshToken)
+      data: authResponse(req, user, accessToken, refreshToken, providerProfile)
     });
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ error: 'Server error during login' });
   }
 };
+
 
 exports.getProfile = async (req, res) => {
   try {
@@ -128,15 +140,25 @@ exports.getProfile = async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
+    // Include providerType for provider users
+    let providerProfile = null;
+    if (user.role === 'provider') {
+      providerProfile = await providerProfileRepository.findByUserId(user._id).catch(() => null);
+    }
+
     res.json({
       success: true,
-      data: { user }
+      data: {
+        user: publicUserPayload(user, providerProfile),
+        providerProfile: providerProfile || undefined
+      }
     });
   } catch (error) {
     console.error('Get profile error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 };
+
 
 exports.refreshToken = async (req, res) => {
   try {
@@ -310,18 +332,35 @@ exports.forgotPassword = async (req, res) => {
       resetPasswordExpire
     });
 
+    const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password/${resetToken}`;
+
+    // Always log the URL in development for convenience
+    if (process.env.NODE_ENV === 'development') {
+      console.log('\n🔑 [DEVELOPMENT ONLY] Reset Password URL:', resetUrl, '\n');
+    }
+
     try {
       const emailService = require('../services/emailService');
       await emailService.sendPasswordReset(email, resetToken, user.name);
 
       if (process.env.NODE_ENV === 'development' && process.env.LOG_PASSWORD_RESET_URL === 'true') {
-        const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password/${resetToken}`;
         console.log('Reset Password URL (for testing only):', resetUrl);
       }
 
       res.status(200).json({ success: true, data: genericMessage });
     } catch (err) {
-      console.error(err);
+      console.error('Failed to send password reset email:', err);
+
+      // If we are in development, catch the error and still succeed with devResetUrl
+      if (process.env.NODE_ENV === 'development') {
+        console.log('⚠️ Email sending failed, but continuing in development mode as reset URL was logged.');
+        return res.status(200).json({
+          success: true,
+          data: genericMessage,
+          devResetUrl: resetUrl
+        });
+      }
+
       await userRepository.updatePasswordReset(user._id, {
         resetPasswordToken: null,
         resetPasswordExpire: null

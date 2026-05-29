@@ -65,6 +65,10 @@ class ConversationManager {
         return this.handleProviderSelection(phoneNumber, trimmed, user, session);
       }
 
+      if (session.step === 'AWAITING_CONFIRMATION') {
+        return this.handleConfirmationResponse(phoneNumber, trimmed, session);
+      }
+
       return this.handleServiceSearch(phoneNumber, trimmed, session);
     } catch (error) {
       console.error('[WhatsAppConversation] Error:', error.message || error);
@@ -78,7 +82,6 @@ class ConversationManager {
   async handleServiceSearch(phoneNumber, message, session) {
     const aiResponse = await aiService.analyzeIntent(message, session);
     const nextSession = await sessionService.updateSession(phoneNumber, {
-      step: 'AWAITING_INFO',
       ...aiResponse.sessionUpdates
     });
 
@@ -86,35 +89,49 @@ class ConversationManager {
       return whatsappService.sendMessage(phoneNumber, aiResponse.replyText);
     }
 
-    await whatsappService.sendMessage(
-      phoneNumber,
-      `Searching for ${nextSession.service} providers near ${nextSession.location}...`
-    );
+    // Instead of jumping straight to providers, we show a summary
+    await sessionService.updateSession(phoneNumber, { step: 'AWAITING_CONFIRMATION' });
+    return whatsappService.sendMessage(phoneNumber, messages.confirmSummary(nextSession));
+  }
 
-    const providers = await matchingEngine.findBestProviders({
-      service: nextSession.service,
-      location: nextSession.location,
-      limit: 3
-    });
+  async handleConfirmationResponse(phoneNumber, message, session) {
+    const text = message.toLowerCase();
 
-    if (providers.length === 0) {
-      await sessionService.updateSession(phoneNumber, {
-        step: 'READY',
-        isConfirmed: false,
-        matchedProviders: []
-      });
-      return whatsappService.sendMessage(
+    if (['yes', 'yup', 'correct', 'confirm'].includes(text)) {
+      await whatsappService.sendMessage(
         phoneNumber,
-        messages.noProviders(nextSession.service, nextSession.location)
+        `Searching for ${session.service} providers near ${session.location}...`
       );
+
+      const providers = await matchingEngine.findBestProviders({
+        service: session.service,
+        location: session.location,
+        limit: 3
+      });
+
+      if (providers.length === 0) {
+        await sessionService.updateSession(phoneNumber, {
+          step: 'READY',
+          isConfirmed: false,
+          matchedProviders: []
+        });
+        return whatsappService.sendMessage(
+          phoneNumber,
+          messages.noProviders(session.service, session.location)
+        );
+      }
+
+      await sessionService.updateSession(phoneNumber, {
+        step: 'PROVIDER_SELECTION',
+        matchedProviders: providers
+      });
+
+      return whatsappService.sendMessage(phoneNumber, messages.providerList(providers));
     }
 
-    await sessionService.updateSession(phoneNumber, {
-      step: 'PROVIDER_SELECTION',
-      matchedProviders: providers
-    });
-
-    return whatsappService.sendMessage(phoneNumber, messages.providerList(providers));
+    // If No or anything else that implies rejection
+    await sessionService.clearSession(phoneNumber);
+    return whatsappService.sendMessage(phoneNumber, 'No problem! Let\'s start fresh. What service do you need today?');
   }
 
   async handleProviderSelection(phoneNumber, message, user, session) {

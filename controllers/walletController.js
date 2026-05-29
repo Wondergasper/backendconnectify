@@ -243,6 +243,14 @@ exports.verifyPayment = async (req, res) => {
 };
 
 exports.addFunds = async (req, res) => {
+  // Completely block this endpoint in production to prevent self-crediting
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(403).json({
+      error: 'Manual wallet funding is not available in production. Use /api/wallet/initialize-payment.',
+      useEndpoint: '/api/wallet/initialize-payment'
+    });
+  }
+
   if (paystackService.isConfigured()) {
     return res.status(400).json({
       error: 'Please use /api/wallet/initialize-payment to fund your wallet via Paystack',

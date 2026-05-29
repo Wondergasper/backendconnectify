@@ -45,3 +45,16 @@ exports.bookingCreated = (provider) =>
     '',
     'You can open the web or mobile app later and see the same booking there.'
   ].join('\n');
+
+exports.confirmSummary = (session) =>
+  [
+    '📝 *Please confirm your request:*',
+    '',
+    `*Service:* ${session.service}`,
+    `*Location:* ${session.location}`,
+    `*Date:* ${session.date || 'As soon as possible'}`,
+    session.budget ? `*Budget:* ${session.budget}` : '',
+    session.urgency === 'emergency' ? '🚨 *Urgent Request*' : '',
+    '',
+    'Is this correct? Reply *YES* to find providers or *NO* to restart.'
+  ].filter(Boolean).join('\n');

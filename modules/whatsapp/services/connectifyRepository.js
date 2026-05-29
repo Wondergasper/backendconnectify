@@ -1,8 +1,15 @@
 const { getSupabaseClient } = require('../../../services/supabaseClient');
+const { randomUUID } = require('crypto');
 
 const normalizePhone = (phoneNumber = '') => {
   const trimmed = String(phoneNumber).trim();
   return trimmed.startsWith('+') ? trimmed : `+${trimmed}`;
+};
+
+const quotePostgrestValue = (val) => {
+  if (val === null || val === undefined) return 'null';
+  const escaped = String(val).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return `"${escaped}"`;
 };
 
 class ConnectifyRepository {
@@ -12,10 +19,13 @@ class ConnectifyRepository {
 
   async findUserByPhone(phoneNumber) {
     const phone = normalizePhone(phoneNumber);
+    const quotedPhone = quotePostgrestValue(phone);
+    const quotedRawPhone = quotePostgrestValue(phoneNumber);
+
     const { data, error } = await this.client
       .from('app_users')
       .select('*')
-      .or(`phone.eq.${phone},phone.eq.${phoneNumber}`)
+      .or(`phone.eq.${quotedPhone},phone.eq.${quotedRawPhone}`)
       .maybeSingle();
 
     if (error) throw error;
@@ -83,15 +93,20 @@ class ConnectifyRepository {
 
     if (service) {
       const escapedService = String(service).replace(/[%_]/g, '\\$&');
-      query = query.or(`name.ilike.%${escapedService}%,category.ilike.%${escapedService}%,description.ilike.%${escapedService}%`);
+      const quotedTerm = quotePostgrestValue(`%${escapedService}%`);
+      query = query.or(`name.ilike.${quotedTerm},category.ilike.${quotedTerm},description.ilike.${quotedTerm}`);
     }
 
     if (location) {
       const escapedLoc = String(location).replace(/[%_]/g, '\\$&');
-      query = query.or(`location->>address.ilike.%${escapedLoc}%,location->>city.ilike.%${escapedLoc}%`);
+      const quotedLoc = quotePostgrestValue(`%${escapedLoc}%`);
+      query = query.or(`location->>address.ilike.${quotedLoc},location->>city.ilike.${quotedLoc}`);
     }
 
-    const { data, error } = await query;
+    const { data, error } = await query
+      .order('rating_average', { ascending: false, nullsFirst: false })
+      .order('completed_jobs_count', { ascending: false });
+
     if (error) throw error;
 
     return (data || []).map((row) => ({
@@ -107,34 +122,31 @@ class ConnectifyRepository {
   }
 
   async createBookingRequest({ customerId, provider, session }) {
-    const payload = {
-      customer_id: customerId,
-      provider_id: provider.providerId,
-      service_id: provider.id,
-      date: session.date || new Date().toISOString().split('T')[0],
-      start_time: session.time || '09:00',
-      duration_minutes: session.duration || 60,
-      status: 'pending',
-      payment_status: 'pending',
-      total_amount: provider.price || 0,
-      notes: session.service ? `Booking for ${session.service} near ${session.location || ''}` : 'WhatsApp Booking',
-      source: 'whatsapp',
-      metadata: {
-        whatsapp: true,
-        service_name: session.service,
-        location: session.location,
-        selected_provider_snapshot: provider.raw || provider
-      }
-    };
-
-    const { data, error } = await this.client
-      .from('bookings')
-      .insert(payload)
-      .select('*')
-      .single();
+    const bookingId = randomUUID();
+    const { error } = await this.client.rpc('create_booking_atomic', {
+      p_booking_id: bookingId,
+      p_customer_id: customerId,
+      p_provider_id: provider.providerId,
+      p_service_id: provider.id,
+      p_date: session.date || new Date().toISOString().split('T')[0],
+      p_time: session.time || '09:00',
+      p_duration: session.duration || 60,
+      p_total_amount: provider.price || 0,
+      p_notes: session.service ? `WhatsApp: ${session.service}` : 'WhatsApp Booking',
+      p_address: { whatsapp_location: session.location || 'Unknown' }
+    });
 
     if (error) throw error;
-    return data;
+    
+    // Fetch the full booking record to return expected structure
+    const { data: booking, error: fetchErr } = await this.client
+      .from('bookings')
+      .select('*, provider:provider_id(name)')
+      .eq('id', bookingId)
+      .single();
+      
+    if (fetchErr) throw fetchErr;
+    return booking;
   }
 
   formatPrice(price) {

@@ -51,4 +51,69 @@ const checkRole = (roles) => {
   };
 };
 
-module.exports = { auth, checkRole };
+/**
+ * Requires the authenticated user to be a provider (role === 'provider').
+ */
+const requireProvider = (req, res, next) => {
+  if (req.user.role !== 'provider') {
+    return res.status(403).json({ error: 'Access denied: provider role required' });
+  }
+  next();
+};
+
+/**
+ * Requires the authenticated user to be a company provider.
+ * Fetches the provider profile and attaches it to req.providerProfile.
+ */
+const requireCompanyProvider = async (req, res, next) => {
+  try {
+    if (req.user.role !== 'provider') {
+      return res.status(403).json({ error: 'Access denied: provider role required' });
+    }
+
+    const { providerProfileRepository } = require('../repositories/supabase/providerProfileRepository');
+    const profile = await providerProfileRepository.findByUserId(req.user._id);
+
+    if (!profile) {
+      return res.status(403).json({ error: 'Provider profile not found. Please complete onboarding.' });
+    }
+
+    if (profile.providerType !== 'company') {
+      return res.status(403).json({ error: 'Access denied: company provider account required' });
+    }
+
+    req.providerProfile = profile;
+    next();
+  } catch (error) {
+    console.error('requireCompanyProvider middleware error:', error);
+    res.status(500).json({ error: 'Authentication error' });
+  }
+};
+
+/**
+ * Requires the authenticated user to be any provider (individual or company).
+ * Fetches and attaches the provider profile to req.providerProfile.
+ */
+const requireAnyProvider = async (req, res, next) => {
+  try {
+    if (req.user.role !== 'provider') {
+      return res.status(403).json({ error: 'Access denied: provider role required' });
+    }
+
+    const { providerProfileRepository } = require('../repositories/supabase/providerProfileRepository');
+    const profile = await providerProfileRepository.findByUserId(req.user._id);
+
+    if (!profile) {
+      return res.status(403).json({ error: 'Provider profile not found. Please complete onboarding.' });
+    }
+
+    req.providerProfile = profile;
+    next();
+  } catch (error) {
+    console.error('requireAnyProvider middleware error:', error);
+    res.status(500).json({ error: 'Authentication error' });
+  }
+};
+
+module.exports = { auth, checkRole, requireProvider, requireCompanyProvider, requireAnyProvider };
+

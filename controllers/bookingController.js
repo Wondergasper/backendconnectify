@@ -106,7 +106,8 @@ exports.createBooking = async (req, res) => {
 
     const service = await serviceRepository.findById(serviceId);
     if (!service) {
-      return res.status(404).json({ error: 'Service not found' });
+      // findById filters is_active=true, so null means either not found or inactive
+      return res.status(404).json({ error: 'Service not found or is no longer available' });
     }
 
     const resolvedProviderId = getId(service.provider) || providerId;

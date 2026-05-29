@@ -358,6 +358,15 @@ const whatsappRoutes = require('./modules/whatsapp');
 const analyticsRoutes = require('./routes/analytics');
 const adminAuthRoutes = require('./routes/adminAuth');
 
+// B2B / Company-provider routes
+const providerRoutes = require('./routes/providers');
+const companyRoutes = require('./routes/company');
+const providerServicesRoutes = require('./routes/providerServices');
+const serviceRequestsRoutes = require('./routes/serviceRequests');
+const adminCompanyRoutes = require('./routes/adminCompany');
+const quotesRoutes = require('./routes/quotes');
+
+
 // API routes
 app.use('/api/auth', authRateLimit, authRoutes);
 app.use('/api/admin/auth', authRateLimit, adminAuthRoutes);
@@ -380,6 +389,15 @@ app.use('/api/notify', apiRateLimit, notifyRoutes);
 app.use('/api/cards', apiRateLimit, cardRoutes);
 app.use('/api/audit', apiRateLimit, auditRoutes);
 app.use('/api/whatsapp', apiRateLimit, whatsappRoutes);
+
+// B2B / Company-provider routes
+app.use('/api/providers', apiRateLimit, providerRoutes);
+app.use('/api/company', apiRateLimit, companyRoutes);
+app.use('/api/provider-services', apiRateLimit, providerServicesRoutes);
+app.use('/api/provider', apiRateLimit, serviceRequestsRoutes);
+app.use('/api/admin', apiRateLimit, adminCompanyRoutes);
+app.use('/api/quotes', apiRateLimit, quotesRoutes);
+
 
 // Health check endpoint (with database and Redis status)
 app.get('/api/health', async (req, res) => {
