@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const { userRepository } = require('../repositories/supabase/userRepository');
+const { AuthError, ForbiddenError } = require('../utils/errors');
 
 const auth = async (req, res, next) => {
   try {
@@ -11,16 +12,13 @@ const auth = async (req, res, next) => {
       token = req.header('Authorization')?.replace('Bearer ', '');
     }
 
-    // Priority 3: admin session cookie — allows admins who logged in via
-    // /admin/auth/login to reach any auth-protected route without a separate
-    // normal-user session. adminAuth middleware still provides the stricter
-    // admin-only guard on dedicated admin routes.
+    // Priority 3: admin session cookie
     if (!token) {
       token = req.cookies.adminAccessToken;
     }
 
     if (!token) {
-      return res.status(401).json({ error: 'No access token, authorization denied' });
+      throw new AuthError('No access token, authorization denied');
     }
 
     try {
@@ -28,24 +26,24 @@ const auth = async (req, res, next) => {
       const user = await userRepository.findById(decoded.userId);
 
       if (!user || user.isActive === false) {
-        return res.status(401).json({ error: 'User not found or account is deactivated' });
+        throw new AuthError('User not found or account is deactivated');
       }
 
       req.user = user;
       next();
     } catch (verifyError) {
-      return res.status(401).json({ error: 'Session expired. Please refresh your session.' });
+      if (verifyError instanceof AuthError) throw verifyError;
+      throw new AuthError('Session expired. Please refresh your session.');
     }
   } catch (error) {
-    console.error('Auth middleware error:', error);
-    res.status(401).json({ error: 'Authentication error' });
+    next(error);
   }
 };
 
 const checkRole = (roles) => {
   return (req, res, next) => {
     if (!roles.includes(req.user.role)) {
-      return res.status(403).json({ error: 'Access denied' });
+      return next(new ForbiddenError('Access denied: insufficient permissions'));
     }
     next();
   };
@@ -56,7 +54,7 @@ const checkRole = (roles) => {
  */
 const requireProvider = (req, res, next) => {
   if (req.user.role !== 'provider') {
-    return res.status(403).json({ error: 'Access denied: provider role required' });
+    return next(new ForbiddenError('Access denied: provider role required'));
   }
   next();
 };
@@ -68,25 +66,24 @@ const requireProvider = (req, res, next) => {
 const requireCompanyProvider = async (req, res, next) => {
   try {
     if (req.user.role !== 'provider') {
-      return res.status(403).json({ error: 'Access denied: provider role required' });
+      throw new ForbiddenError('Access denied: provider role required');
     }
 
     const { providerProfileRepository } = require('../repositories/supabase/providerProfileRepository');
     const profile = await providerProfileRepository.findByUserId(req.user._id);
 
     if (!profile) {
-      return res.status(403).json({ error: 'Provider profile not found. Please complete onboarding.' });
+      throw new ForbiddenError('Provider profile not found. Please complete onboarding.');
     }
 
     if (profile.providerType !== 'company') {
-      return res.status(403).json({ error: 'Access denied: company provider account required' });
+      throw new ForbiddenError('Access denied: company provider account required');
     }
 
     req.providerProfile = profile;
     next();
   } catch (error) {
-    console.error('requireCompanyProvider middleware error:', error);
-    res.status(500).json({ error: 'Authentication error' });
+    next(error);
   }
 };
 
@@ -97,23 +94,24 @@ const requireCompanyProvider = async (req, res, next) => {
 const requireAnyProvider = async (req, res, next) => {
   try {
     if (req.user.role !== 'provider') {
-      return res.status(403).json({ error: 'Access denied: provider role required' });
+      throw new ForbiddenError('Access denied: provider role required');
     }
 
     const { providerProfileRepository } = require('../repositories/supabase/providerProfileRepository');
     const profile = await providerProfileRepository.findByUserId(req.user._id);
 
     if (!profile) {
-      return res.status(403).json({ error: 'Provider profile not found. Please complete onboarding.' });
+      throw new ForbiddenError('Provider profile not found. Please complete onboarding.');
     }
 
     req.providerProfile = profile;
     next();
   } catch (error) {
-    console.error('requireAnyProvider middleware error:', error);
-    res.status(500).json({ error: 'Authentication error' });
+    next(error);
   }
 };
+
+module.exports = { auth, checkRole, requireProvider, requireCompanyProvider, requireAnyProvider };
 
 module.exports = { auth, checkRole, requireProvider, requireCompanyProvider, requireAnyProvider };
 

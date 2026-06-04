@@ -413,17 +413,40 @@ app.get('/api/health', async (req, res) => {
 });
 
 // Error handling middleware
-app.use((err, req, res, next) => {
-  console.error(err.stack);
+const { AppError } = require('./utils/errors');
 
-  // Don't expose error details in production
-  const errorResponse = { error: 'Something went wrong!' };
+app.use((err, req, res, next) => {
+  // If headers are already sent, delegate to the default Express error handler
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  // Log the error for debugging
+  console.error(`[Error] ${req.method} ${req.url}:`, err.stack);
+
+  // Determine status code and message
+  const statusCode = err.statusCode || 500;
+  let message = err.message || 'Something went wrong!';
+  let errors = err.errors || undefined;
+
+  // For production, hide internal server error details
+  if (process.env.NODE_ENV === 'production' && !err.isOperational) {
+    message = 'An unexpected error occurred. Please try again later.';
+  }
+
+  const errorResponse = {
+    success: false,
+    error: message,
+    errors: errors,
+    statusCode: statusCode
+  };
+
+  // Include stack trace in non-production environments
   if (process.env.NODE_ENV !== 'production') {
-    errorResponse.details = err.message;
     errorResponse.stack = err.stack;
   }
 
-  res.status(err.statusCode || 500).json(errorResponse);
+  res.status(statusCode).json(errorResponse);
 });
 
 // 404 handler
