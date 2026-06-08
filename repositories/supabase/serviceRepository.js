@@ -11,6 +11,14 @@ const toNumberOrUndefined = (value) => {
 
 const escapeLike = (value) => String(value).replace(/[%_]/g, '\\$&');
 
+const quotePostgrestValue = (value) => {
+  const str = String(value);
+  if (str.includes(',') || str.includes('(') || str.includes(')') || str.includes('"')) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+};
+
 class ServiceRepository extends BaseRepository {
   constructor(clientFactory) {
     super('services', mapServiceRow, clientFactory);
@@ -67,7 +75,9 @@ class ServiceRepository extends BaseRepository {
 
     if (search) {
       const escaped = escapeLike(search);
-      nextQuery = nextQuery.or(`name.ilike.%${escaped}%,description.ilike.%${escaped}%,category.ilike.%${escaped}%`);
+      const pattern = `%${escaped}%`;
+      const quoted = quotePostgrestValue(pattern);
+      nextQuery = nextQuery.or(`name.ilike.${quoted},description.ilike.${quoted},category.ilike.${quoted}`);
     }
 
     return nextQuery;

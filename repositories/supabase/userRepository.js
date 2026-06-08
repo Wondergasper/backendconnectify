@@ -175,7 +175,9 @@ class UserRepository extends BaseRepository {
 
     if (search) {
       const escaped = String(search).replace(/[%_]/g, '\\$&');
-      query = query.or(`name.ilike.%${escaped}%,email.ilike.%${escaped}%,phone.ilike.%${escaped}%`);
+      const pattern = `%${escaped}%`;
+      const quoted = quotePostgrestValue(pattern);
+      query = query.or(`name.ilike.${quoted},email.ilike.${quoted},phone.ilike.${quoted}`);
     }
 
     const from = (Number(page) - 1) * Number(limit);

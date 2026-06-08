@@ -3,6 +3,12 @@ const { mapAuditLogRow } = require('./mappers');
 
 const AUDIT_SELECT = '*,actor:actor_id(id,name,email,phone,role,profile,provider_details,rating_average,rating_count,completed_jobs_count,wallet_balance,wallet_currency,is_active,created_at,updated_at)';
 
+const quotePostgrestValue = (val) => {
+  if (val === null || val === undefined) return 'null';
+  const escaped = String(val).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return `"${escaped}"`;
+};
+
 class AuditRepository extends BaseRepository {
   constructor(clientFactory) {
     super('audit_logs', mapAuditLogRow, clientFactory);
@@ -32,7 +38,9 @@ class AuditRepository extends BaseRepository {
 
     if (search) {
       const escaped = String(search).replace(/[%_]/g, '\\$&');
-      query = query.or(`actor_name.ilike.%${escaped}%,action.ilike.%${escaped}%,target.ilike.%${escaped}%,entity_type.ilike.%${escaped}%`);
+      const pattern = `%${escaped}%`;
+      const quoted = quotePostgrestValue(pattern);
+      query = query.or(`actor_name.ilike.${quoted},action.ilike.${quoted},target.ilike.${quoted},entity_type.ilike.${quoted}`);
     }
 
     const from = (Number(page) - 1) * Number(limit);

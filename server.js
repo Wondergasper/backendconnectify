@@ -36,6 +36,7 @@ if (process.env.JWT_SECRET.length < 32) {
 }
 
 const app = express();
+app.set('trust proxy', 1); // Enable trust proxy for Render/Vercel reverse proxies
 const server = http.createServer(app);
 
 // Configure Socket.IO with CORS

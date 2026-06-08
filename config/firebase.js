@@ -29,7 +29,8 @@ function initializeFirebase() {
             } else if (privateKey.startsWith("'") && privateKey.endsWith("'")) {
                 privateKey = privateKey.substring(1, privateKey.length - 1);
             }
-            privateKey = privateKey.replace(/\\n/g, "\n");
+            // Handle both literal '\n' and escaped '\\n' commonly found in env files
+            privateKey = privateKey.replace(/\\n/g, '\n').replace(/(?<!\\)\\n/g, '\n');
         }
 
         // Initialize Firebase with credentials from environment variables

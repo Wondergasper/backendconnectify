@@ -129,35 +129,14 @@ class ConversationRepository extends BaseRepository {
   }
 
   async updateLastMessage(conversationId, content, senderId, type = 'text') {
-    const convResult = await this.table()
-      .update({
-        last_message: {
-          content,
-          type,
-          sender: senderId,
-          timestamp: new Date().toISOString()
-        },
-        last_message_at: new Date().toISOString()
-      })
-      .eq('id', conversationId);
-    ensureNoError(convResult, 'Update last message info');
-
-    // Get all participants to increment unread counts
-    const parts = await this.client
-      .from('conversation_participants')
-      .select('user_id, unread_count')
-      .eq('conversation_id', conversationId);
-
-    const participants = parts.data || [];
-    for (const p of participants) {
-      if (p.user_id !== senderId) {
-        await this.client
-          .from('conversation_participants')
-          .update({ unread_count: (p.unread_count || 0) + 1 })
-          .eq('conversation_id', conversationId)
-          .eq('user_id', p.user_id);
-      }
-    }
+    const result = await this.client.rpc('update_conversation_last_message_atomic', {
+      p_conversation_id: conversationId,
+      p_content: content,
+      p_sender_id: senderId,
+      p_type: type
+    });
+    
+    ensureNoError(result, 'Update last message info atomically');
   }
 
   async markAsRead(conversationId, userId, lastMessageId) {

@@ -162,7 +162,8 @@ exports.getProfile = async (req, res) => {
 
 exports.refreshToken = async (req, res) => {
   try {
-    const { refreshToken } = req.cookies;
+    // Check cookies first, fallback to body for mobile clients
+    const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
 
     if (!refreshToken) {
       return res.status(401).json({ error: 'No refresh token provided' });
@@ -189,9 +190,11 @@ exports.refreshToken = async (req, res) => {
     const { refreshToken: newRefreshToken, refreshTokenHash: newRefreshTokenHash } = generateRefreshToken(user._id);
     await userRepository.updateRefreshToken(user._id, newRefreshTokenHash);
 
+    // Set cookies for web clients
     res.cookie('accessToken', newAccessToken, cookieOptions(15 * 60 * 1000));
     res.cookie('refreshToken', newRefreshToken, cookieOptions(7 * 24 * 60 * 60 * 1000));
 
+    // Return tokens in response payload for mobile clients
     res.json({
       success: true,
       data: authResponse(req, user, newAccessToken, newRefreshToken)
@@ -206,9 +209,12 @@ exports.logout = async (req, res) => {
   try {
     let userId = req.user?._id || req.user?.id;
 
-    if (!userId && req.cookies.refreshToken) {
+    // Check cookies first, fallback to body for mobile
+    const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
+
+    if (!userId && refreshToken) {
       try {
-        const decoded = jwt.verify(req.cookies.refreshToken, process.env.JWT_SECRET);
+        const decoded = jwt.verify(refreshToken, process.env.JWT_SECRET);
         userId = decoded.userId;
       } catch {
         userId = null;
@@ -219,6 +225,7 @@ exports.logout = async (req, res) => {
       await userRepository.clearRefreshToken(userId);
     }
 
+    // Always attempt to clear cookies (harmless for mobile)
     res.clearCookie('accessToken', clearCookieOptions);
     res.clearCookie('refreshToken', clearCookieOptions);
 
@@ -228,8 +235,8 @@ exports.logout = async (req, res) => {
     });
   } catch (error) {
     console.error('Logout error:', error);
-    res.clearCookie('accessToken');
-    res.clearCookie('refreshToken');
+    res.clearCookie('accessToken', clearCookieOptions);
+    res.clearCookie('refreshToken', clearCookieOptions);
     res.status(500).json({ error: 'Server error during logout' });
   }
 };

@@ -15,26 +15,28 @@ class BookingReminderService {
 
     /**
      * Start the reminder scheduler
-     * Runs every hour to check for upcoming bookings
+     * Uses Bull queue for distributed safety (ensures only one worker runs the task)
      */
-    start() {
+    async start() {
         if (this.isRunning) {
             console.log('⚠️  Booking reminder service is already running');
             return;
         }
 
-        console.log('📅 Starting booking reminder service...');
+        console.log('📅 Scheduling booking reminders via Bull queue...');
         this.isRunning = true;
 
-        // Run immediately on start
-        this.sendReminders();
-
-        // Then run every hour (3600000 ms)
-        this.intervalId = setInterval(() => {
-            this.sendReminders();
-        }, 60 * 60 * 1000); // 1 hour
-
-        console.log('✅ Booking reminder service started (runs every hour)');
+        const { addReminderJob } = require('./queueService');
+        try {
+            await addReminderJob.scheduleHourlyReminders();
+            console.log('✅ Booking reminder task scheduled (runs every hour via distributed queue)');
+        } catch (error) {
+            console.error('❌ Failed to schedule booking reminders:', error);
+            // Fallback to local interval if queue scheduling fails
+            this.intervalId = setInterval(() => {
+                this.sendReminders();
+            }, 60 * 60 * 1000);
+        }
     }
 
     /**

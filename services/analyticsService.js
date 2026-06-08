@@ -110,9 +110,13 @@ class AnalyticsService {
 
   // Track system metrics
   async trackSystemMetrics(metric, value = 1) {
-    const metricKey = `metric:system:${metric}`;
+    const metricKey = `metrics:${metric}`;
     await this.redis.getClient().incrby(metricKey, value);
-    await this.redis.getClient().expire(metricKey, 86400); // 1 day expiry
+    
+    // Only set expiry for daily metrics
+    if (metric.includes('today') || metric.includes(':today')) {
+      await this.redis.getClient().expire(metricKey, 86400 * 2); // 2 days expiry
+    }
   }
 
   // Get dashboard statistics
@@ -170,7 +174,7 @@ class AnalyticsService {
     // Update system metrics
     this.trackSystemMetrics('total_bookings');
     if (eventType === 'created') {
-      this.trackSystemMetrics('bookings_today');
+      this.trackSystemMetrics('bookings:today');
     }
   }
 

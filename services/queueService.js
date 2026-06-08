@@ -13,6 +13,7 @@ const redisConfig = {
 const emailQueue = new Queue('Email Processing', redisConfig);
 const notificationQueue = new Queue('Notification Processing', redisConfig);
 const imageProcessingQueue = new Queue('Image Processing', redisConfig);
+const bookingReminderQueue = new Queue('Booking Reminders', redisConfig);
 
 // Process email queue
 emailQueue.process('sendBookingConfirmation', async (job) => {
@@ -91,6 +92,19 @@ imageProcessingQueue.process('resizeAndOptimizeImage', async (job) => {
   }
 });
 
+// Process booking reminder queue
+bookingReminderQueue.process('processReminders', async (job) => {
+  // Use late require to avoid circular dependency
+  const bookingReminderService = require('./bookingReminderService');
+  try {
+    const result = await bookingReminderService.sendReminders();
+    return { success: true, ...result };
+  } catch (error) {
+    console.error('Failed to process booking reminders job:', error);
+    throw error;
+  }
+});
+
 // Add email jobs to queue
 const addEmailJob = {
   sendBookingConfirmation: (booking, recipientEmail, recipientName, options = {}) => {
@@ -154,16 +168,29 @@ const addImageJob = {
   }
 };
 
+// Add reminder jobs to queue
+const addReminderJob = {
+  scheduleHourlyReminders: () => {
+    return bookingReminderQueue.add('processReminders', {}, {
+      repeat: { cron: '0 * * * *' }, // Every hour on the hour
+      jobId: 'hourly_booking_reminders',
+      removeOnComplete: true
+    });
+  }
+};
+
 // Get queue metrics
 const getQueueMetrics = async () => {
   const emailQueueMetrics = await emailQueue.getJobCounts();
   const notificationQueueMetrics = await notificationQueue.getJobCounts();
   const imageProcessingQueueMetrics = await imageProcessingQueue.getJobCounts();
+  const bookingReminderQueueMetrics = await bookingReminderQueue.getJobCounts();
 
   return {
     emailQueue: emailQueueMetrics,
     notificationQueue: notificationQueueMetrics,
     imageProcessingQueue: imageProcessingQueueMetrics,
+    bookingReminderQueue: bookingReminderQueueMetrics,
     timestamp: new Date().toISOString()
   };
 };
@@ -173,12 +200,14 @@ const pauseQueues = () => {
   emailQueue.pause();
   notificationQueue.pause();
   imageProcessingQueue.pause();
+  bookingReminderQueue.pause();
 };
 
 const resumeQueues = () => {
   emailQueue.resume();
   notificationQueue.resume();
   imageProcessingQueue.resume();
+  bookingReminderQueue.resume();
 };
 
 // Graceful shutdown
@@ -187,7 +216,8 @@ const gracefulShutdown = async () => {
   await Promise.all([
     emailQueue.close(),
     notificationQueue.close(),
-    imageProcessingQueue.close()
+    imageProcessingQueue.close(),
+    bookingReminderQueue.close()
   ]);
   console.log('All queues closed');
 };
@@ -196,9 +226,11 @@ module.exports = {
   emailQueue,
   notificationQueue,
   imageProcessingQueue,
+  bookingReminderQueue,
   addEmailJob,
   addNotificationJob,
   addImageJob,
+  addReminderJob,
   getQueueMetrics,
   pauseQueues,
   resumeQueues,
