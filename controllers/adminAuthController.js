@@ -4,10 +4,12 @@ const { validationResult } = require('express-validator');
 const { generateAccessToken, generateRefreshToken, hashRefreshToken } = require('../utils/tokenUtils');
 const { userRepository } = require('../repositories/supabase/userRepository');
 
+const isProdOrRender = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true' || process.env.VERCEL === '1';
+
 const adminCookieOptions = {
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
+  secure: isProdOrRender,
+  sameSite: isProdOrRender ? 'none' : 'lax'
 };
 
 exports.login = async (req, res) => {

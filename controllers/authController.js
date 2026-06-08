@@ -7,17 +7,19 @@ const { userRepository } = require('../repositories/supabase/userRepository');
 const { providerProfileRepository } = require('../repositories/supabase/providerProfileRepository');
 
 
+const isProdOrRender = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true' || process.env.VERCEL === '1';
+
 const cookieOptions = (maxAge) => ({
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+  secure: isProdOrRender,
+  sameSite: isProdOrRender ? 'none' : 'lax',
   maxAge
 });
 
 const clearCookieOptions = {
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
+  secure: isProdOrRender,
+  sameSite: isProdOrRender ? 'none' : 'lax'
 };
 
 const publicUserPayload = (user, providerProfile = null) => ({
