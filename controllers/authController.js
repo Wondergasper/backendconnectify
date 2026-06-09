@@ -329,6 +329,44 @@ exports.updateProfile = async (req, res) => {
 
     const user = await userRepository.updateProfile(req.user._id, updateData);
 
+    // SYNC LOGIC: If the user is or just became a provider, sync with provider_profiles table
+    if (user.role === 'provider') {
+      try {
+        const existingProfile = await providerProfileRepository.findByUserId(user._id).catch(() => null);
+        const pDetails = user.providerDetails || {};
+        const pType = pDetails.providerType || 'individual';
+
+        if (!existingProfile) {
+          // Create initial profile in the dedicated table
+          await providerProfileRepository.create({
+            userId: user._id,
+            providerType: pType,
+            displayName: user.name,
+            businessName: pDetails.companyName || pDetails.businessName,
+            contactPersonName: pDetails.contactName || pDetails.contactPersonName,
+            description: pDetails.bio || user.profile?.bio,
+            phone: pDetails.companyPhone || user.phone,
+            email: pDetails.companyEmail || user.email,
+            address: pDetails.businessAddress || user.profile?.location?.address
+          });
+        } else {
+          // Update existing profile in the dedicated table
+          await providerProfileRepository.updateByUserId(user._id, {
+            displayName: user.name,
+            businessName: pDetails.companyName || pDetails.businessName,
+            contactPersonName: pDetails.contactName || pDetails.contactPersonName,
+            description: pDetails.bio || user.profile?.bio,
+            phone: pDetails.companyPhone || user.phone,
+            email: pDetails.companyEmail || user.email,
+            address: pDetails.businessAddress || user.profile?.location?.address
+          });
+        }
+      } catch (syncError) {
+        console.error('❌ Profile Sync Error:', syncError);
+        // We don't fail the request here, but we log the error
+      }
+    }
+
     res.json({
       success: true,
       data: { user }
