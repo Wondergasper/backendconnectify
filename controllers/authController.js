@@ -57,7 +57,11 @@ exports.register = async (req, res) => {
     }
 
     const { name, email, phone, password, role } = req.body;
-    const safeRole = ['customer', 'provider'].includes(role) ? role : 'customer';
+    
+    // Check if role was explicitly provided (e.g. from a specific landing page button)
+    const roleProvided = !!(role && ['customer', 'provider'].includes(role));
+    const safeRole = roleProvided ? role : 'customer';
+    
     const existingUser = await userRepository.findByEmailOrPhone({ email, phone });
 
     if (existingUser) {
@@ -75,7 +79,8 @@ exports.register = async (req, res) => {
       email,
       phone,
       passwordHash: await hashPassword(password),
-      role: safeRole
+      role: safeRole,
+      profile: { roleSelected: roleProvided }
     });
 
     const accessToken = generateAccessToken(user._id);
@@ -278,9 +283,15 @@ exports.updateProfile = async (req, res) => {
           ? { ...currentLocation, address: profile.location }
           : { ...currentLocation, ...profile.location, type: profile.location?.type || 'Point' };
       }
+      if (profile.roleSelected !== undefined) nextProfile.roleSelected = profile.roleSelected;
       if (profile.social && typeof profile.social === 'object') {
         nextProfile.social = { ...(nextProfile.social || {}), ...profile.social };
       }
+    }
+
+    if (role !== undefined) {
+      // If role is being updated, we assume the user has made a manual selection
+      nextProfile.roleSelected = true;
     }
 
     if (bio !== undefined && (profile === undefined || profile.bio === undefined)) nextProfile.bio = bio;
@@ -300,13 +311,20 @@ exports.updateProfile = async (req, res) => {
 
     if (providerDetails && typeof providerDetails === 'object') {
       const currentProviderDetails = req.user.providerDetails || {};
+      
+      // Deep merge provider details, ensuring all keys (like providerType, companyName, etc.) are saved
       updateData.provider_details = {
         ...currentProviderDetails,
-        ...providerDetails,
-        availability: providerDetails.availability
-          ? { ...(currentProviderDetails.availability || {}), ...providerDetails.availability }
-          : currentProviderDetails.availability
+        ...providerDetails
       };
+      
+      // Handle nested availability specifically if it exists in both
+      if (providerDetails.availability && currentProviderDetails.availability) {
+        updateData.provider_details.availability = {
+          ...currentProviderDetails.availability,
+          ...providerDetails.availability
+        };
+      }
     }
 
     const user = await userRepository.updateProfile(req.user._id, updateData);

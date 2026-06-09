@@ -76,14 +76,15 @@ class UserRepository extends BaseRepository {
     return mapUserRow(ensureNoError(result, 'Find user by email or phone'));
   }
 
-  async createUser({ name, email, phone, passwordHash, role = 'customer' }) {
+  async createUser({ name, email, phone, passwordHash, role = 'customer', profile = {} }) {
     const result = await this.table()
       .insert({
         name,
         email: String(email).toLowerCase(),
         phone,
         password_hash: passwordHash,
-        role
+        role,
+        profile
       })
       .select(PUBLIC_USER_SELECT)
       .single();
