@@ -87,6 +87,17 @@ exports.register = async (req, res) => {
     const { refreshToken, refreshTokenHash } = generateRefreshToken(user._id);
     await userRepository.updateRefreshToken(user._id, refreshTokenHash);
 
+    // Send Welcome Email asynchronously (don't block the response)
+    try {
+      const emailService = require('../services/emailService');
+      // Fire and forget - don't await this so the user doesn't have to wait for the email API
+      emailService.sendWelcomeEmail(user, email, name).catch(err => {
+        console.error('⚠️ Non-fatal: Failed to send welcome email in background:', err.message);
+      });
+    } catch (emailError) {
+      console.error('⚠️ Non-fatal: Could not initialize email service for welcome email:', emailError.message);
+    }
+
     res.cookie('accessToken', accessToken, cookieOptions(15 * 60 * 1000));
     res.cookie('refreshToken', refreshToken, cookieOptions(7 * 24 * 60 * 60 * 1000));
 

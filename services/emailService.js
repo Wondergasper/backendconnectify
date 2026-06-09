@@ -60,7 +60,7 @@ class EmailService {
 
     try {
       const recipient = Array.isArray(to) ? to : [to];
-      const sender = from || process.env.EMAIL_FROM || 'Connectify Nigeria <noreply@connectify.ng>';
+      const sender = from || process.env.EMAIL_FROM || '"Connectify Nigeria" <onboarding@resend.dev>';
 
       const payload = {
         from: sender,
@@ -112,7 +112,7 @@ class EmailService {
     }
     try {
       const mailOptions = {
-        from: process.env.EMAIL_FROM || '"Connectify Nigeria" <noreply@connectify.ng>',
+        from: process.env.EMAIL_FROM || '"Connectify Nigeria" <onboarding@resend.dev>',
         to: recipientEmail,
         subject: 'Booking Confirmation - Connectify Nigeria',
         html: `
@@ -160,7 +160,7 @@ class EmailService {
       };
 
       const mailOptions = {
-        from: process.env.EMAIL_FROM || '"Connectify Nigeria" <noreply@connectify.ng>',
+        from: process.env.EMAIL_FROM || '"Connectify Nigeria" <onboarding@resend.dev>',
         to: recipientEmail,
         subject: `Booking Status Update - ${status.charAt(0).toUpperCase() + status.slice(1)}`,
         html: `
@@ -199,7 +199,7 @@ class EmailService {
     }
     try {
       const mailOptions = {
-        from: process.env.EMAIL_FROM || '"Connectify Nigeria" <noreply@connectify.ng>',
+        from: process.env.EMAIL_FROM || '"Connectify Nigeria" <onboarding@resend.dev>',
         to: recipientEmail,
         subject: 'Welcome to Connectify Nigeria!',
         html: `
@@ -239,7 +239,7 @@ class EmailService {
       const resetLink = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password/${resetToken}`;
 
       const mailOptions = {
-        from: process.env.EMAIL_FROM || '"Connectify Nigeria" <noreply@connectify.ng>',
+        from: process.env.EMAIL_FROM || '"Connectify Nigeria" <onboarding@resend.dev>',
         to: email,
         subject: 'Password Reset Request',
         html: `
@@ -275,7 +275,7 @@ class EmailService {
     }
     try {
       const mailOptions = {
-        from: process.env.EMAIL_FROM || '"Connectify Nigeria" <noreply@connectify.ng>',
+        from: process.env.EMAIL_FROM || '"Connectify Nigeria" <onboarding@resend.dev>',
         to: recipientEmail,
         subject: 'Verification Request Submitted',
         html: `
@@ -319,7 +319,7 @@ class EmailService {
       });
 
       const mailOptions = {
-        from: process.env.EMAIL_FROM || '"Connectify Nigeria" <noreply@connectify.ng>',
+        from: process.env.EMAIL_FROM || '"Connectify Nigeria" <onboarding@resend.dev>',
         to: providerEmail,
         subject: '🎉 New Booking Request - Connectify Nigeria',
         html: `
@@ -412,7 +412,7 @@ class EmailService {
         : 'Please ensure you are available at the scheduled time.';
 
       const mailOptions = {
-        from: process.env.EMAIL_FROM || '"Connectify Nigeria" <noreply@connectify.ng>',
+        from: process.env.EMAIL_FROM || '"Connectify Nigeria" <onboarding@resend.dev>',
         to: recipientEmail,
         subject: '⏰ Booking Reminder - Tomorrow! - Connectify Nigeria',
         html: `
@@ -501,7 +501,7 @@ class EmailService {
       });
 
       const mailOptions = {
-        from: process.env.EMAIL_FROM || '"Connectify Nigeria" <noreply@connectify.ng>',
+        from: process.env.EMAIL_FROM || '"Connectify Nigeria" <onboarding@resend.dev>',
         to: recipientEmail,
         subject: '💳 Payment Receipt - Connectify Nigeria',
         html: `
@@ -616,7 +616,7 @@ class EmailService {
       });
 
       const mailOptions = {
-        from: process.env.EMAIL_FROM || '"Connectify Nigeria" <noreply@connectify.ng>',
+        from: process.env.EMAIL_FROM || '"Connectify Nigeria" <onboarding@resend.dev>',
         to: recipientEmail,
         subject: '💰 Payment Received - Connectify Nigeria',
         html: `
@@ -724,7 +724,7 @@ class EmailService {
       });
 
       const mailOptions = {
-        from: process.env.EMAIL_FROM || '"Connectify Nigeria" <noreply@connectify.ng>',
+        from: process.env.EMAIL_FROM || '"Connectify Nigeria" <onboarding@resend.dev>',
         to: recipientEmail,
         subject: '✅ Wallet Top-up Successful - Connectify Nigeria',
         html: `
