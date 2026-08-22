@@ -249,7 +249,7 @@ exports.analyzeIntent = async (message, session) => {
   const truncated = String(message || '').slice(0, MAX_USER_MESSAGE_LENGTH);
 
   try {
-    const model = getGenAI().getGenerativeModel({ model: 'gemini-3.6-flash' });
+    const model = getGenAI().getGenerativeModel({ model: 'gemini-1.5-flash' });
     const prompt = buildPrompt(truncated, session);
 
     const result = await model.generateContent(prompt);

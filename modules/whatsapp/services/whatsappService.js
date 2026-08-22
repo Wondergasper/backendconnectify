@@ -39,7 +39,7 @@ exports.sendMessage = async (to, text, attempt = 1) => {
     console.error(`Error sending WhatsApp message to ${to} (HTTP ${status || 'n/a'}):`, apiError || error.message);
 
     // Retry once for transient/server errors (5xx, timeouts, rate limits).
-    if (attempt < MAX_SEND_ATTEMPTS - 1 && (status >= 500 || status === 429 || !status)) {
+    if (attempt < MAX_SEND_ATTEMPTS && (status >= 500 || status === 429 || !status)) {
       return exports.sendMessage(to, text, attempt + 1);
     }
   }

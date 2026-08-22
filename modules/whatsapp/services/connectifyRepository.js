@@ -62,7 +62,7 @@ class ConnectifyRepository {
 
     const phone = normalizePhone(phoneNumber);
     const payload = {
-      name: 'WhatsApp User',
+      name: null,
       email: `whatsapp_${phone.replace('+', '')}@connectify.com`,
       phone,
       role: 'customer',
