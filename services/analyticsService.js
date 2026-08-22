@@ -18,14 +18,14 @@ class AnalyticsService {
       defaultMeta: { service: 'connectify-backend' },
       transports: [
         // Write all logs with level 'error' and below to error.log
-        new winston.transports.File({ 
-          filename: 'logs/error.log', 
+        new winston.transports.File({
+          filename: 'logs/error.log',
           level: 'error',
           maxsize: 5242880, // 5MB
           maxFiles: 5
         }),
         // Write all logs with level 'info' and below to combined.log
-        new winston.transports.File({ 
+        new winston.transports.File({
           filename: 'logs/combined.log',
           maxsize: 5242880, // 5MB
           maxFiles: 5
@@ -43,6 +43,15 @@ class AnalyticsService {
     });
   }
 
+  /**
+   * Redis client is optional — analytics must never crash request handling
+   * when Redis is down or not yet initialized.
+   */
+  _client() {
+    const client = this.redis.getSafeClient();
+    return client && client.isReady ? client : null;
+  }
+
   // Log user activities
   logUserActivity(userId, action, details = {}) {
     const logData = {
@@ -56,11 +65,12 @@ class AnalyticsService {
     };
 
     this.logger.info('User Activity', logData);
-    
-    // Store in Redis for real-time analytics
+
+    const client = this._client();
+    if (!client) return;
     const activityKey = `user:activity:${userId}`;
-    this.redis.getClient().lpush(activityKey, JSON.stringify(logData));
-    this.redis.getClient().expire(activityKey, 86400 * 7); // 7 days expiry
+    client.lpush(activityKey, JSON.stringify(logData));
+    client.expire(activityKey, 86400 * 7); // 7 days expiry
   }
 
   // Log API requests
@@ -77,11 +87,12 @@ class AnalyticsService {
     };
 
     this.logger.info('API Request', logData);
-    
-    // Store in Redis for monitoring
+
+    const client = this._client();
+    if (!client) return;
     const requestKey = `api:request:${new Date().toISOString().split('T')[0]}`;
-    this.redis.getClient().lpush(requestKey, JSON.stringify(logData));
-    this.redis.getClient().expire(requestKey, 86400 * 30); // 30 days expiry
+    client.lpush(requestKey, JSON.stringify(logData));
+    client.expire(requestKey, 86400 * 30); // 30 days expiry
   }
 
   // Log errors
@@ -94,46 +105,54 @@ class AnalyticsService {
     };
 
     this.logger.error('Application Error', logData);
-    
-    // Store in Redis for error monitoring
+
+    const client = this._client();
+    if (!client) return;
     const errorKey = `error:log:${new Date().toISOString().split('T')[0]}`;
-    this.redis.getClient().lpush(errorKey, JSON.stringify(logData));
-    this.redis.getClient().expire(errorKey, 86400 * 30); // 30 days expiry
+    client.lpush(errorKey, JSON.stringify(logData));
+    client.expire(errorKey, 86400 * 30); // 30 days expiry
   }
 
   // Track user metrics
   async trackUserMetrics(userId, metric, value = 1) {
+    const client = this._client();
+    if (!client) return;
     const metricKey = `metric:user:${metric}`;
-    await this.redis.getClient().hincrby(metricKey, userId, value);
-    await this.redis.getClient().expire(metricKey, 86400 * 30); // 30 days expiry
+    await client.hincrby(metricKey, userId, value);
+    await client.expire(metricKey, 86400 * 30); // 30 days expiry
   }
 
   // Track system metrics
   async trackSystemMetrics(metric, value = 1) {
+    const client = this._client();
+    if (!client) return;
     const metricKey = `metrics:${metric}`;
-    await this.redis.getClient().incrby(metricKey, value);
-    
+    await client.incrby(metricKey, value);
+
     // Only set expiry for daily metrics
     if (metric.includes('today') || metric.includes(':today')) {
-      await this.redis.getClient().expire(metricKey, 86400 * 2); // 2 days expiry
+      await client.expire(metricKey, 86400 * 2); // 2 days expiry
     }
   }
 
   // Get dashboard statistics
   async getDashboardStats() {
     try {
+      const client = this._client();
+      if (!client) return null;
+
       // Get user activity counts
-      const dailyUsers = await this.redis.getClient().scard('users:active:today');
-      const weeklyUsers = await this.redis.getClient().scard('users:active:week');
-      const monthlyUsers = await this.redis.getClient().scard('users:active:month');
-      
+      const dailyUsers = await client.scard('users:active:today');
+      const weeklyUsers = await client.scard('users:active:week');
+      const monthlyUsers = await client.scard('users:active:month');
+
       // Get service metrics
-      const totalServices = await this.redis.getClient().get('metrics:total_services') || 0;
-      
+      const totalServices = await client.get('metrics:total_services') || 0;
+
       // Get booking metrics
-      const dailyBookings = await this.redis.getClient().get('metrics:bookings:today') || 0;
-      const totalBookings = await this.redis.getClient().get('metrics:total_bookings') || 0;
-      
+      const dailyBookings = await client.get('metrics:bookings:today') || 0;
+      const totalBookings = await client.get('metrics:total_bookings') || 0;
+
       return {
         users: {
           dailyActive: parseInt(dailyUsers),
@@ -165,12 +184,13 @@ class AnalyticsService {
     };
 
     this.logger.info('Booking Event', logData);
-    
-    // Track in Redis
+
+    const client = this._client();
+    if (!client) return;
     const key = `booking:events:${bookingId}`;
-    this.redis.getClient().lpush(key, JSON.stringify(logData));
-    this.redis.getClient().expire(key, 86400 * 30); // 30 days expiry
-    
+    client.lpush(key, JSON.stringify(logData));
+    client.expire(key, 86400 * 30); // 30 days expiry
+
     // Update system metrics
     this.trackSystemMetrics('total_bookings');
     if (eventType === 'created') {
@@ -189,19 +209,23 @@ class AnalyticsService {
     };
 
     this.logger.warn('Security Event', logData);
-    
+
+    const client = this._client();
+    if (!client) return;
     // Store security events separately
     const securityKey = `security:events:${new Date().toISOString().split('T')[0]}`;
-    this.redis.getClient().lpush(securityKey, JSON.stringify(logData));
-    this.redis.getClient().expire(securityKey, 86400 * 90); // 90 days expiry
+    client.lpush(securityKey, JSON.stringify(logData));
+    client.expire(securityKey, 86400 * 90); // 90 days expiry
   }
 
   // Get user activity history
   async getUserActivityHistory(userId, limit = 50) {
     try {
+      const client = this._client();
+      if (!client) return [];
       const activityKey = `user:activity:${userId}`;
-      const activities = await this.redis.getClient().lrange(activityKey, 0, limit - 1);
-      return activities.map(activity => JSON.parse(activity));
+      const activities = await client.lrange(activityKey, 0, limit - 1);
+      return (activities || []).map(activity => JSON.parse(activity));
     } catch (error) {
       this.logError(error, { function: 'getUserActivityHistory', userId });
       return [];

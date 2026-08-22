@@ -113,5 +113,3 @@ const requireAnyProvider = async (req, res, next) => {
 
 module.exports = { auth, checkRole, requireProvider, requireCompanyProvider, requireAnyProvider };
 
-module.exports = { auth, checkRole, requireProvider, requireCompanyProvider, requireAnyProvider };
-

@@ -19,6 +19,12 @@ class RedisService {
     return this.client;
   }
 
+  // Safe client accessor — returns null when Redis is not initialized so callers
+  // can degrade gracefully (e.g. analytics/security logging) instead of throwing.
+  getSafeClient() {
+    return this.client;
+  }
+
   // Cache user data
   async cacheUserData(userId, userData, ttl = 3600) { // 1 hour default
     try {

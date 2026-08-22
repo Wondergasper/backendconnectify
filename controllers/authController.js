@@ -64,24 +64,43 @@ exports.register = async (req, res) => {
     
     const existingUser = await userRepository.findByEmailOrPhone({ email, phone });
 
+    let user;
     if (existingUser) {
-      if (existingUser.email === String(email).toLowerCase()) {
-        return res.status(400).json({ error: 'An account with this email already exists. Please login or use a different email.' });
-      }
-      if (existingUser.phone === phone) {
-        return res.status(400).json({ error: 'An account with this phone number already exists. Please login or use a different phone number.' });
-      }
-      return res.status(400).json({ error: 'User already exists' });
-    }
+      // WhatsApp flows auto-create `app_users` rows with a synthetic
+      // `whatsapp_...@connectify.com` email and no password. If a real person
+      // registers later with the same phone, claim that row instead of
+      // rejecting them (otherwise they'd be locked out of the app).
+      const isWhatsAppGhost =
+        typeof existingUser.email === 'string' &&
+        existingUser.email.toLowerCase().startsWith('whatsapp_');
 
-    const user = await userRepository.createUser({
-      name,
-      email,
-      phone,
-      passwordHash: await hashPassword(password),
-      role: safeRole,
-      profile: { roleSelected: roleProvided }
-    });
+      if (!isWhatsAppGhost) {
+        if (existingUser.email === String(email).toLowerCase()) {
+          return res.status(400).json({ error: 'An account with this email already exists. Please login or use a different email.' });
+        }
+        if (existingUser.phone === phone) {
+          return res.status(400).json({ error: 'An account with this phone number already exists. Please login or use a different phone number.' });
+        }
+        return res.status(400).json({ error: 'User already exists' });
+      }
+
+      user = await userRepository.claimWhatsAppUser({
+        id: existingUser._id,
+        name,
+        email,
+        passwordHash: await hashPassword(password),
+        profile: { ...(existingUser.profile || {}), roleSelected: roleProvided }
+      });
+    } else {
+      user = await userRepository.createUser({
+        name,
+        email,
+        phone,
+        passwordHash: await hashPassword(password),
+        role: safeRole,
+        profile: { roleSelected: roleProvided }
+      });
+    }
 
     const accessToken = generateAccessToken(user._id);
     const { refreshToken, refreshTokenHash } = generateRefreshToken(user._id);

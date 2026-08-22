@@ -102,6 +102,28 @@ class UserRepository extends BaseRepository {
     return mapUserRow(ensureNoError(result, 'Update refresh token'));
   }
 
+  /**
+   * Claim a WhatsApp auto-created account (synthetic `whatsapp_...` email,
+   * no password) when a real user registers with the same phone/email.
+   * Preserves the flagged profile (e.g. whatsapp_id) while attaching real
+   * credentials so the person is not locked out.
+   */
+  async claimWhatsAppUser({ id, name, email, passwordHash, profile = {} }) {
+    const result = await this.table()
+      .update({
+        name,
+        email: String(email).toLowerCase(),
+        password_hash: passwordHash,
+        refresh_token_hash: null,
+        profile
+      })
+      .eq('id', id)
+      .select(PUBLIC_USER_SELECT)
+      .single();
+
+    return mapUserRow(ensureNoError(result, 'Claim WhatsApp user'));
+  }
+
   async clearRefreshToken(userId) {
     return this.updateRefreshToken(userId, null);
   }

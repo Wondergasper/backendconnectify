@@ -14,6 +14,19 @@ const getUserId = (user) =>
 const isInactive = (user) =>
   user?.is_active === false || user?.isActive === false || user?.is_blocked === true || user?.isBlocked === true;
 
+// Only ever persist keys the flow understands. Anything the model or the user
+// tries to smuggle in (step overrides, matchedProviders, aiCalls, ...) is dropped.
+const sanitizeSessionUpdates = (updates) => {
+  const clean = {};
+  for (const key of aiService.ALLOWED_SESSION_KEYS) {
+    if (updates[key] !== undefined) clean[key] = updates[key];
+  }
+  return clean;
+};
+
+const hasDateTime = (session) =>
+  Boolean(session.date && aiService.normalizeTime(session.time));
+
 class ConversationManager {
   async handleIncomingMessage(phoneNumber, message) {
     try {
@@ -69,6 +82,10 @@ class ConversationManager {
         return this.handleConfirmationResponse(phoneNumber, trimmed, session);
       }
 
+      if (session.step === 'AWAITING_DATETIME') {
+        return this.handleDateTimeCapture(phoneNumber, trimmed, session);
+      }
+
       return this.handleServiceSearch(phoneNumber, trimmed, session);
     } catch (error) {
       console.error('[WhatsAppConversation] Error:', error.message || error);
@@ -80,16 +97,28 @@ class ConversationManager {
   }
 
   async handleServiceSearch(phoneNumber, message, session) {
+    const currentCalls = Number(session.aiCalls || 0);
     const aiResponse = await aiService.analyzeIntent(message, session);
-    const nextSession = await sessionService.updateSession(phoneNumber, {
-      ...aiResponse.sessionUpdates
-    });
+
+    if (aiResponse.rateLimited) {
+      await sessionService.updateSession(phoneNumber, { step: 'READY' });
+      return whatsappService.sendMessage(
+        phoneNumber,
+        'I think we got a bit stuck there. Could you tell me the service you need and your area, e.g. "a plumber in Ikeja"?'
+      );
+    }
+
+    const nextUpdates = {
+      ...sanitizeSessionUpdates(aiResponse.sessionUpdates || {}),
+      aiCalls: currentCalls + 1
+    };
+
+    const nextSession = await sessionService.updateSession(phoneNumber, nextUpdates);
 
     if (!nextSession.isConfirmed) {
       return whatsappService.sendMessage(phoneNumber, aiResponse.replyText);
     }
 
-    // Instead of jumping straight to providers, we show a summary
     await sessionService.updateSession(phoneNumber, { step: 'AWAITING_CONFIRMATION' });
     return whatsappService.sendMessage(phoneNumber, messages.confirmSummary(nextSession));
   }
@@ -98,40 +127,73 @@ class ConversationManager {
     const text = message.toLowerCase();
 
     if (['yes', 'yup', 'correct', 'confirm'].includes(text)) {
+      if (!aiService.normalizeDate(session.date) || !aiService.normalizeTime(session.time)) {
+        await sessionService.updateSession(phoneNumber, { step: 'AWAITING_DATETIME' });
+        return whatsappService.sendMessage(phoneNumber, messages.askDateTime());
+      }
+
       await whatsappService.sendMessage(
         phoneNumber,
         `Searching for ${session.service} providers near ${session.location}...`
       );
 
-      const providers = await matchingEngine.findBestProviders({
-        service: session.service,
-        location: session.location,
-        limit: 3
-      });
-
-      if (providers.length === 0) {
-        await sessionService.updateSession(phoneNumber, {
-          step: 'READY',
-          isConfirmed: false,
-          matchedProviders: []
-        });
-        return whatsappService.sendMessage(
-          phoneNumber,
-          messages.noProviders(session.service, session.location)
-        );
-      }
-
-      await sessionService.updateSession(phoneNumber, {
-        step: 'PROVIDER_SELECTION',
-        matchedProviders: providers
-      });
-
-      return whatsappService.sendMessage(phoneNumber, messages.providerList(providers));
+      return this.findAndPresentProviders(phoneNumber, session);
     }
 
-    // If No or anything else that implies rejection
     await sessionService.clearSession(phoneNumber);
     return whatsappService.sendMessage(phoneNumber, 'No problem! Let\'s start fresh. What service do you need today?');
+  }
+
+  /**
+   * Collect date (and optionally time) from the user before looking for providers.
+   */
+  async handleDateTimeCapture(phoneNumber, message, session) {
+    const date = aiService.normalizeDate(message) || session.date;
+    const time = aiService.normalizeTime(message) || session.time;
+
+    const updated = await sessionService.updateSession(phoneNumber, {
+      ...(date ? { date } : {}),
+      ...(time ? { time } : {})
+    });
+
+    if (updated.date && aiService.normalizeTime(updated.time)) {
+      return await this.findAndPresentProviders(phoneNumber, updated);
+    }
+
+    const missing = [];
+    if (!aiService.normalizeDate(updated.date)) missing.push('date');
+    if (!aiService.normalizeTime(updated.time)) missing.push('time');
+    return whatsappService.sendMessage(
+      phoneNumber,
+      `Almost there. Could you tell me the ${missing.join(' and ')}? e.g. "tomorrow 5pm".`
+    );
+  }
+
+  async findAndPresentProviders(phoneNumber, session) {
+    const providers = await matchingEngine.findBestProviders({
+      service: session.service,
+      location: session.location,
+      limit: 3
+    });
+
+    if (providers.length === 0) {
+      await sessionService.updateSession(phoneNumber, {
+        step: 'READY',
+        isConfirmed: false,
+        matchedProviders: []
+      });
+      return whatsappService.sendMessage(
+        phoneNumber,
+        messages.noProviders(session.service, session.location)
+      );
+    }
+
+    await sessionService.updateSession(phoneNumber, {
+      step: 'PROVIDER_SELECTION',
+      matchedProviders: providers
+    });
+
+    return whatsappService.sendMessage(phoneNumber, messages.providerList(providers));
   }
 
   async handleProviderSelection(phoneNumber, message, user, session) {
@@ -142,15 +204,33 @@ class ConversationManager {
       return whatsappService.sendMessage(phoneNumber, 'Please reply with a number from the list.');
     }
 
-    const selectedProvider = providers[choiceIndex];
-    await connectifyRepository.createBookingRequest({
-      customerId: getUserId(user),
-      provider: selectedProvider,
-      session
-    });
+    if (!hasDateTime(session)) {
+      await sessionService.updateSession(phoneNumber, { step: 'AWAITING_DATETIME' });
+      return whatsappService.sendMessage(phoneNumber, messages.askDateTime());
+    }
 
-    await sessionService.clearSession(phoneNumber);
-    return whatsappService.sendMessage(phoneNumber, messages.bookingCreated(selectedProvider));
+    const selectedProvider = providers[choiceIndex];
+
+    try {
+      await connectifyRepository.createBookingRequest({
+        customerId: getUserId(user),
+        provider: selectedProvider,
+        session
+      });
+
+      await sessionService.clearSession(phoneNumber);
+      return whatsappService.sendMessage(phoneNumber, messages.bookingCreated(selectedProvider));
+    } catch (error) {
+      console.error('[WhatsAppConversation] Booking error:', error.message || error);
+      if (error && /(already booked|Time slot)/i.test(error.message || '')) {
+        return whatsappService.sendMessage(
+          phoneNumber,
+          `The ${session.time} slot on ${session.date} is unfortunately already taken. Reply with a different time (e.g. "5pm") and I will try again.`
+        );
+      }
+      await sessionService.updateSession(phoneNumber, { step: 'AWAITING_DATETIME' });
+      return whatsappService.sendMessage(phoneNumber, messages.bookingFailed(session));
+    }
   }
 }
 

@@ -1,8 +1,6 @@
 // middleware/security.js
-const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const hpp = require('hpp');
-const analyticsService = require('../services/analyticsService');
 
 // Helmet security headers
 const securityHeaders = helmet({
@@ -25,44 +23,6 @@ const securityHeaders = helmet({
     policy: 'same-origin',
   },
 });
-
-// Rate limiting configuration
-const createRateLimiter = (windowMs, max, message) => {
-  return rateLimit({
-    windowMs, // Time window in milliseconds
-    max, // Limit each IP to max requests per windowMs
-    message: {
-      success: false,
-      message: message
-    },
-    standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
-    legacyHeaders: false, // Disable the `X-RateLimit-*` headers
-    skip: (req) => {
-      // Skip rate limiting for certain conditions
-      // For example, skip for admin users or internal requests
-      return req.user && req.user.role === 'admin';
-    }
-  });
-};
-
-// Different rate limiters for different purposes
-const globalRateLimiter = createRateLimiter(
-  15 * 60 * 1000, // 15 minutes
-  100, // Limit each IP to 100 requests per window
-  'Too many requests from this IP, please try again later.'
-);
-
-const authRateLimiter = createRateLimiter(
-  15 * 60 * 1000, // 15 minutes
-  5, // Limit each IP to 5 authentication requests per window
-  'Too many authentication attempts from this IP, please try again later.'
-);
-
-const searchRateLimiter = createRateLimiter(
-  1 * 60 * 1000, // 1 minute
-  30, // Limit each IP to 30 search requests per window
-  'Too many search requests from this IP, please try again later.'
-);
 
 // XSS protection using built-in express functionality
 const xssProtection = (req, res, next) => {
@@ -152,42 +112,9 @@ const sameOriginGuard = (allowedOrigins = []) => {
   };
 };
 
-// Security logging middleware
-const securityLogging = (req, res, next) => {
-  // Log potential security issues
-  if (req.query.password || req.body.password) {
-    analyticsService.logSecurityEvent(
-      req.user ? req.user._id : 'anonymous',
-      'password_in_query_or_body',
-      {
-        ip: req.ip,
-        endpoint: req.originalUrl,
-        method: req.method
-      }
-    );
-  }
-
-  next();
-};
-
-// IP tracking and logging
-const trackIP = (req, res, next) => {
-  req.clientIP = req.headers['x-forwarded-for'] ||
-                 req.connection.remoteAddress ||
-                 req.socket.remoteAddress ||
-                 (req.connection.socket ? req.connection.socket.remoteAddress : null);
-
-  next();
-};
-
 module.exports = {
   securityHeaders,
-  globalRateLimiter,
-  authRateLimiter,
-  searchRateLimiter,
   sameOriginGuard,
   xssProtection,
   hppProtection,
-  securityLogging,
-  trackIP
 };

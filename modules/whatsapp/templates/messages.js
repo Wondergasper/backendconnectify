@@ -53,8 +53,26 @@ exports.confirmSummary = (session) =>
     `*Service:* ${session.service}`,
     `*Location:* ${session.location}`,
     `*Date:* ${session.date || 'As soon as possible'}`,
+    session.time ? `*Time:* ${session.time}` : '',
     session.budget ? `*Budget:* ${session.budget}` : '',
     session.urgency === 'emergency' ? '🚨 *Urgent Request*' : '',
     '',
     'Is this correct? Reply *YES* to find providers or *NO* to restart.'
   ].filter(Boolean).join('\n');
+
+exports.askDateTime = () =>
+  [
+    'Which date and time works best for you?',
+    '',
+    'Examples:',
+    '- "today 5pm"',
+    '- "tomorrow 10:30"',
+    '- "2026-08-10 09:00"'
+  ].join('\n');
+
+exports.bookingFailed = (session) =>
+  [
+    "I couldn't create the booking request. That could be because the provider is unavailable at the chosen time.",
+    '',
+    'Reply with a different date/time (e.g. "tomorrow 5pm") and I will try again, or type cancel to start over.'
+  ].join('\n');

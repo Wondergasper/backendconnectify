@@ -67,6 +67,11 @@ function extractMessageText(message) {
 function isValidSignature(req) {
   const appSecret = process.env.WHATSAPP_APP_SECRET;
   if (!appSecret) {
+    // Fail closed in production: never trust unauthenticated webhooks.
+    if (process.env.NODE_ENV === 'production') {
+      console.error('[WhatsAppWebhook] WHATSAPP_APP_SECRET is not configured; rejecting webhook in production.');
+      return false;
+    }
     return true;
   }
 

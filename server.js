@@ -39,6 +39,15 @@ const app = express();
 app.set('trust proxy', 1); // Enable trust proxy for Render/Vercel reverse proxies
 const server = http.createServer(app);
 
+// Build the list of allowed CORS origins: development/localhost defaults merged
+// with any origins supplied via the CORS_ORIGIN environment variable.
+const buildOrigins = (defaults = []) => {
+  const envOrigins = process.env.CORS_ORIGIN
+    ? process.env.CORS_ORIGIN.split(',').map(origin => origin.trim()).filter(Boolean)
+    : [];
+  return [...new Set([...defaults, ...envOrigins])];
+};
+
 // Configure Socket.IO with CORS
 // Default origins that should ALWAYS be allowed for Socket.IO
 const socketDefaultOrigins = [
@@ -56,18 +65,8 @@ const socketDefaultOrigins = [
   'https://connectifynigeria.vercel.app'  // Production frontend on Vercel
 ];
 
-// Parse environment variable origins if provided for Socket.IO
-let socketEnvOrigins = [];
-if (process.env.CORS_ORIGIN) {
-  if (process.env.CORS_ORIGIN.includes(',')) {
-    socketEnvOrigins = process.env.CORS_ORIGIN.split(',').map(origin => origin.trim());
-  } else {
-    socketEnvOrigins = [process.env.CORS_ORIGIN.trim()];
-  }
-}
-
 // Merge default and env origins, removing duplicates
-const socketCorsOrigin = [...new Set([...socketDefaultOrigins, ...socketEnvOrigins])];
+const socketCorsOrigin = buildOrigins(socketDefaultOrigins);
 
 const io = socketIo(server, {
   cors: {
@@ -104,18 +103,8 @@ const defaultOrigins = [
   'https://connectifynigeria.vercel.app'  // Production frontend on Vercel
 ];
 
-// Parse environment variable origins if provided
-let envOrigins = [];
-if (process.env.CORS_ORIGIN) {
-  if (process.env.CORS_ORIGIN.includes(',')) {
-    envOrigins = process.env.CORS_ORIGIN.split(',').map(origin => origin.trim());
-  } else {
-    envOrigins = [process.env.CORS_ORIGIN.trim()];
-  }
-}
-
 // Merge default and env origins, removing duplicates
-let corsOrigin = [...new Set([...defaultOrigins, ...envOrigins])];
+const corsOrigin = buildOrigins(defaultOrigins);
 
 app.use(cors({
   origin: corsOrigin,
@@ -488,6 +477,16 @@ process.on('SIGTERM', () => {
     console.log('Server closed');
     process.exit(0);
   });
+});
+
+// Backstop for any rejected promises or exceptions that escape an async route
+// handler (Express 4 does not forward them to the error middleware). Log them
+// instead of crashing the process.
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+});
+process.on('uncaughtException', (error) => {
+  console.error('[uncaughtException]', error);
 });
 
 module.exports = app;

@@ -1,10 +1,32 @@
 const { getSupabaseClient } = require('../../../services/supabaseClient');
 const { randomUUID } = require('crypto');
 
+const { normalizeDate, normalizeTime } = require('./aiService');
+
 const normalizePhone = (phoneNumber = '') => {
   const trimmed = String(phoneNumber).trim();
   return trimmed.startsWith('+') ? trimmed : `+${trimmed}`;
 };
+
+// Explicit column allow-list: never SELECT * from app_users, which would pull
+// password_hash / refresh_token_hash / reset tokens into this layer.
+const WHATSAPP_USER_SELECT = [
+  'id',
+  'name',
+  'email',
+  'phone',
+  'role',
+  'profile',
+  'provider_details',
+  'rating_average',
+  'rating_count',
+  'completed_jobs_count',
+  'wallet_balance',
+  'wallet_currency',
+  'is_active',
+  'created_at',
+  'updated_at'
+].join(',');
 
 const quotePostgrestValue = (val) => {
   if (val === null || val === undefined) return 'null';
@@ -24,7 +46,7 @@ class ConnectifyRepository {
 
     const { data, error } = await this.client
       .from('app_users')
-      .select('*')
+      .select(WHATSAPP_USER_SELECT)
       .or(`phone.eq.${quotedPhone},phone.eq.${quotedRawPhone}`)
       .maybeSingle();
 
@@ -52,7 +74,7 @@ class ConnectifyRepository {
     const { data, error } = await this.client
       .from('app_users')
       .insert(payload)
-      .select('*')
+      .select(WHATSAPP_USER_SELECT)
       .single();
 
     if (error) throw error;
@@ -61,7 +83,7 @@ class ConnectifyRepository {
 
   async updateUserName(userId, fullName) {
     // Fetch the user first to preserve sibling profile fields
-    const user = await this.client.from('app_users').select('*').eq('id', userId).single();
+    const user = await this.client.from('app_users').select(WHATSAPP_USER_SELECT).eq('id', userId).single();
     if (user.error) throw user.error;
     
     const currentProfile = user.data.profile || {};
@@ -78,7 +100,7 @@ class ConnectifyRepository {
         profile: updatedProfile
       })
       .eq('id', userId)
-      .select('*')
+      .select(WHATSAPP_USER_SELECT)
       .single();
 
     if (error) throw error;
@@ -123,13 +145,15 @@ class ConnectifyRepository {
 
   async createBookingRequest({ customerId, provider, session }) {
     const bookingId = randomUUID();
+    const normalizedDate = normalizeDate(session.date) || new Date().toISOString().split('T')[0];
+    const normalizedTime = normalizeTime(session.time) || '09:00';
     const { error } = await this.client.rpc('create_booking_atomic', {
       p_booking_id: bookingId,
       p_customer_id: customerId,
       p_provider_id: provider.providerId,
       p_service_id: provider.id,
-      p_date: session.date || new Date().toISOString().split('T')[0],
-      p_time: session.time || '09:00',
+      p_date: normalizedDate,
+      p_time: normalizedTime,
       p_duration: session.duration || 60,
       p_total_amount: provider.price || 0,
       p_notes: session.service ? `WhatsApp: ${session.service}` : 'WhatsApp Booking',

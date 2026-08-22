@@ -16,7 +16,12 @@ const cacheResponse = (keyGenerator, ttl = 300) => {
       // Add user-specific cache if user is authenticated
       const userCacheKey = req.user ? `${cacheKey}:user:${req.user._id}` : cacheKey;
 
-      const cachedResponse = await redisService.getClient().get(userCacheKey);
+      const redisClient = redisService.getSafeClient();
+      if (!redisClient) {
+        return next(); // Redis not available; continue without caching
+      }
+
+      const cachedResponse = await redisClient.get(userCacheKey);
 
       if (cachedResponse) {
         console.log(`Cache HIT for key: ${userCacheKey}`);
@@ -38,7 +43,7 @@ const cacheResponse = (keyGenerator, ttl = 300) => {
             _ttl: ttl
           };
 
-          redisService.getClient().setEx(userCacheKey, ttl, JSON.stringify(cacheData))
+          redisClient.setEx(userCacheKey, ttl, JSON.stringify(cacheData))
             .catch(err => console.error('Cache set error:', err));
         }
         return originalJson.call(this, data);

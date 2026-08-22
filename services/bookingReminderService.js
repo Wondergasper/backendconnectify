@@ -84,33 +84,43 @@ class BookingReminderService {
 
             for (const booking of bookings) {
                 try {
+                    // Claim the booking FIRST (conditional update on
+                    // reminder_sent=false). If the claim is lost, another
+                    // worker/run already owns this booking — skip to avoid
+                    // duplicate emails/SMS.
+                    const claimed = await bookingRepository.claimReminder(booking._id);
+                    if (!claimed) {
+                        console.log(`🔒 Booking ${booking._id} reminder already claimed; skipping`);
+                        continue;
+                    }
+
                     // Prepare booking data for reminders
                     const bookingData = {
-                        _id: booking._id,
-                        date: booking.date,
-                        time: booking.time,
-                        address: booking.address,
-                        serviceName: booking.service?.name || 'Service',
-                        customerName: booking.customer?.name || 'Customer',
-                        providerName: booking.provider?.name || 'Provider',
-                        service: booking.service
+                        _id: claimed._id,
+                        date: claimed.date,
+                        time: claimed.time,
+                        address: claimed.address,
+                        serviceName: claimed.service?.name || 'Service',
+                        customerName: claimed.customer?.name || 'Customer',
+                        providerName: claimed.provider?.name || 'Provider',
+                        service: claimed.service
                     };
 
                     // 1. Send reminder to customer (Email)
-                    if (booking.customer?.email) {
+                    if (claimed.customer?.email) {
                         await emailService.sendBookingReminder(
                             bookingData,
-                            booking.customer.email,
-                            booking.customer.name,
+                            claimed.customer.email,
+                            claimed.customer.name,
                             'customer'
                         );
-                        console.log(`✅ Email reminder sent to customer: ${booking.customer.email}`);
+                        console.log(`✅ Email reminder sent to customer: ${claimed.customer.email}`);
                     }
 
                     // 2. Send reminder to customer (SMS)
-                    if (booking.customer?.phone) {
+                    if (claimed.customer?.phone) {
                         await smsNotificationService.sendTemplatedSms('booking_reminder', {
-                            phone: booking.customer.phone,
+                            phone: claimed.customer.phone,
                             time: bookingData.time,
                             serviceName: bookingData.serviceName,
                             address: bookingData.address
@@ -118,31 +128,37 @@ class BookingReminderService {
                     }
 
                     // 3. Send reminder to provider (Email)
-                    if (booking.provider?.email) {
+                    if (claimed.provider?.email) {
                         await emailService.sendBookingReminder(
                             bookingData,
-                            booking.provider.email,
-                            booking.provider.name,
+                            claimed.provider.email,
+                            claimed.provider.name,
                             'provider'
                         );
-                        console.log(`✅ Email reminder sent to provider: ${booking.provider.email}`);
+                        console.log(`✅ Email reminder sent to provider: ${claimed.provider.email}`);
                     }
 
                     // 4. Send reminder to provider (SMS)
-                    if (booking.provider?.phone) {
+                    if (claimed.provider?.phone) {
                         await smsNotificationService.sendTemplatedSms('booking_reminder', {
-                            phone: booking.provider.phone,
+                            phone: claimed.provider.phone,
                             time: bookingData.time,
                             serviceName: bookingData.serviceName,
                             address: bookingData.address
                         });
                     }
 
-                    // Mark booking as reminded
-                    await bookingRepository.markReminderSent(booking._id);
+                    // 5. Reminder was claimed up-front, so there is no flag to
+                    //    mark afterwards. If any step above failed we unwind the
+                    //    claim below so a later run retries.
                     sent++;
                 } catch (error) {
                     console.error(`❌ Failed to send reminder for booking ${booking._id}:`, error.message);
+                    // Revert the claim so the reminder is retried later instead
+                    // of being silently lost.
+                    await bookingRepository
+                        .updateBooking(booking._id, { reminderSent: false })
+                        .catch((unwindError) => console.error('⚠️ Could not unwind reminder claim:', unwindError.message));
                     failed++;
                 }
             }

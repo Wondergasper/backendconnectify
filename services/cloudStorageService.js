@@ -3,7 +3,9 @@ const { createClient } = require('@supabase/supabase-js');
 class SupabaseStorageService {
   constructor() {
     this.supabaseUrl = process.env.SUPABASE_URL;
-    this.supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.SUPABASE_ANON_KEY;
+    // Only ever use the service-role credential here. Falling back to the anon
+    // key would silently route storage operations through anon RLS policies.
+    this.supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
     this.bucket = process.env.SUPABASE_STORAGE_BUCKET || 'connectify-uploads';
     this.client = null;
 

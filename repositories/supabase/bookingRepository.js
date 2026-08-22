@@ -150,6 +150,24 @@ class BookingRepository extends BaseRepository {
     return this.updateBooking(id, { reminderSent: true });
   }
 
+  /**
+   * Atomically claim a booking for reminder dispatch (sets reminder_sent where
+   * it is still false). Only one worker can own a booking at a time, and a
+   * crash between the send and the flag close leaves NO duplicate window,
+   * because the flag is set BEFORE sending. Returns the claimed booking, or
+   * null when it was already claimed.
+   */
+  async claimReminder(id) {
+    const result = await this.table()
+      .update({ reminder_sent: true })
+      .eq('id', id)
+      .eq('reminder_sent', false)
+      .select(BOOKING_SELECT)
+      .maybeSingle();
+
+    return mapBookingRow(ensureNoError(result, 'Claim booking reminder'));
+  }
+
   async createBookingAtomic({
     id,
     customerId,
