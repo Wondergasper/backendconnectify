@@ -77,6 +77,7 @@ function isValidSignature(req) {
 
   const signature = req.headers['x-hub-signature-256'];
   if (!signature) {
+    console.error('[WhatsAppWebhook] Signature missing! Rejecting.');
     return false;
   }
 
@@ -85,10 +86,11 @@ function isValidSignature(req) {
   const receivedBuffer = Buffer.from(signature);
   const expectedBuffer = Buffer.from(expected);
 
-  return (
-    receivedBuffer.length === expectedBuffer.length &&
-    crypto.timingSafeEqual(receivedBuffer, expectedBuffer)
-  );
+  const isValid = receivedBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(receivedBuffer, expectedBuffer);
+  if (!isValid) {
+    console.error(`[WhatsAppWebhook] Signature mismatch! Expected: ${expected}, Received: ${signature}`);
+  }
+  return isValid;
 }
 
 module.exports = router;
